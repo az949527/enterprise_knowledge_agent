@@ -1,0 +1,272 @@
+[
+  {
+    "id": "demo_leave_apply_notice",
+    "user_id": 1,
+    "question": "员工请假需要提前多久提交申请？",
+    "reference_answer": "员工请假应至少提前 1 个工作日在系统提交申请。",
+    "expected_document_contains": "demo_hr_leave_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["提前1个工作日", "系统提交"]
+  },
+  {
+    "id": "demo_leave_sick_proof",
+    "user_id": 1,
+    "question": "病假超过几天需要医院证明？",
+    "reference_answer": "病假超过 2 天需要提供医院证明。",
+    "expected_document_contains": "demo_hr_leave_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["超过2天", "超过 2 天"], "医院证明"]
+  },
+  {
+    "id": "demo_leave_personal_limit",
+    "user_id": 1,
+    "question": "事假每月原则上最多几天？",
+    "reference_answer": "事假每月原则上不超过 3 天。",
+    "expected_document_contains": "demo_hr_leave_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["不超过3天", "不超过 3 天"]]
+  },
+  {
+    "id": "demo_reimbursement_deadline",
+    "user_id": 1,
+    "question": "费用报销需要在多久内提交？",
+    "reference_answer": "所有报销需在费用发生后 30 个自然日内提交。",
+    "expected_document_contains": "demo_finance_reimbursement.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["30个自然日", "30 个自然日"]]
+  },
+  {
+    "id": "demo_reimbursement_approval_3000",
+    "user_id": 1,
+    "question": "3000元以上的报销需要谁复核？",
+    "reference_answer": "3000 元以上的报销需财务经理复核。",
+    "expected_document_contains": "demo_finance_reimbursement.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["3000元", "3000 元"], "财务经理复核"]
+  },
+  {
+    "id": "demo_reimbursement_hotel_standard",
+    "user_id": 1,
+    "question": "一线城市和其他城市的差旅住宿标准分别是多少？",
+    "reference_answer": "一线城市每晚不超过 600 元，其他城市每晚不超过 400 元。",
+    "expected_document_contains": "demo_finance_reimbursement.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["600元", "600 元"], ["400元", "400 元"]]
+  },
+  {
+    "id": "demo_it_temp_permission",
+    "user_id": 1,
+    "question": "临时权限最长有效期是多久？",
+    "reference_answer": "临时权限最长有效期为 30 天，到期自动失效。",
+    "expected_document_contains": "demo_it_account_access.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["30天", "30 天"], "自动失效"]
+  },
+  {
+    "id": "demo_it_sensitive_access",
+    "user_id": 1,
+    "question": "涉及财务或客户数据的系统权限需要谁复核？",
+    "reference_answer": "涉及财务、客户数据或生产环境的权限，除直属主管审批外，还需系统负责人复核。",
+    "expected_document_contains": "demo_it_account_access.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["系统负责人复核", "直属主管审批"]
+  },
+  {
+    "id": "demo_it_offboarding",
+    "user_id": 1,
+    "question": "员工离职时 IT 账号应如何处理？",
+    "reference_answer": "员工离职时，HR 应在最后工作日前通知 IT 禁用账号，并保留必要的审计记录。",
+    "expected_document_contains": "demo_it_account_access.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["HR", "最后工作日前", "禁用账号", "审计记录"]
+  },
+  {
+    "id": "demo_contract_50w",
+    "user_id": 1,
+    "question": "金额达到50万元及以上的合同需要谁审批？",
+    "reference_answer": "金额达到 50 万元及以上的合同需总经理审批。",
+    "expected_document_contains": "demo_contract_approval.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["50万元", "50 万元"], "总经理审批"]
+  },
+  {
+    "id": "demo_contract_legal_sla",
+    "user_id": 1,
+    "question": "标准模板合同通常多久完成法务审核？",
+    "reference_answer": "标准模板合同通常在 2 个工作日内完成法务审核。",
+    "expected_document_contains": "demo_contract_approval.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["2个工作日", "2 个工作日"], "法务审核"]
+  },
+  {
+    "id": "demo_contract_private_signature",
+    "user_id": 1,
+    "question": "合同未审批通过可以先对外盖章或签字吗？",
+    "reference_answer": "不可以。未经审批通过，任何员工不得私自对外盖章或签字。",
+    "expected_document_contains": "demo_contract_approval.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["不可以", "不得"], "私自对外盖章", "签字"]
+  },
+  {
+    "id": "demo_sla_p1",
+    "user_id": 1,
+    "question": "P1 客户支持请求要求多久响应和多久给恢复方案？",
+    "reference_answer": "P1 需 15 分钟内响应，4 小时内给出恢复方案。",
+    "expected_document_contains": "demo_customer_support_sla.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["15分钟", "15 分钟"], ["4小时", "4 小时"], "恢复方案"]
+  },
+  {
+    "id": "demo_sla_p4",
+    "user_id": 1,
+    "question": "P4 支持请求多久内响应？",
+    "reference_answer": "P4 为咨询、使用建议或低优先级需求，需 2 个工作日内响应。",
+    "expected_document_contains": "demo_customer_support_sla.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["2个工作日", "2 个工作日"], "响应"]
+  },
+  {
+    "id": "demo_sla_review",
+    "user_id": 1,
+    "question": "哪些客户支持工单关闭后需要复盘？",
+    "reference_answer": "P1、P2 工单关闭后，支持负责人应组织复盘并输出改进项。",
+    "expected_document_contains": "demo_customer_support_sla.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["P1", "P2", "复盘", "改进项"]
+  },
+  {
+    "id": "demo_security_sensitive_data",
+    "user_id": 1,
+    "question": "哪些内容属于敏感数据？",
+    "reference_answer": "敏感数据包括客户联系方式、合同价格、员工身份证号、薪酬信息和访问日志。",
+    "expected_document_contains": "demo_data_security.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["客户联系方式", "合同价格", "身份证号", "薪酬信息", "访问日志"]
+  },
+  {
+    "id": "demo_security_export_1000",
+    "user_id": 1,
+    "question": "导出超过1000条客户数据需要谁审批？",
+    "reference_answer": "导出超过 1000 条客户数据时，需要部门负责人和数据安全负责人共同审批。",
+    "expected_document_contains": "demo_data_security.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["1000条", "1000 条"], "部门负责人", "数据安全负责人"]
+  },
+  {
+    "id": "demo_security_leak_notice",
+    "user_id": 1,
+    "question": "发生疑似数据泄露时多久内通知信息安全团队？",
+    "reference_answer": "发生疑似数据泄露时，应在 30 分钟内通知信息安全团队。",
+    "expected_document_contains": "demo_data_security.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["30分钟", "30 分钟"], "信息安全团队"]
+  },
+  {
+    "id": "demo_procurement_3_suppliers",
+    "user_id": 1,
+    "question": "采购金额达到1万元但低于10万元时需要几家供应商询价？",
+    "reference_answer": "采购金额达到 1 万元但低于 10 万元时，需至少询价 3 家供应商。",
+    "expected_document_contains": "demo_procurement_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["1万元", "1 万元"], ["10万元", "10 万元"], ["3家", "3 家"]]
+  },
+  {
+    "id": "demo_procurement_security_assessment",
+    "user_id": 1,
+    "question": "哪些供应商需要完成安全评估？",
+    "reference_answer": "涉及信息系统、云服务或外包开发的供应商需要完成安全评估。",
+    "expected_document_contains": "demo_procurement_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["信息系统", "云服务", "外包开发", "安全评估"]
+  },
+  {
+    "id": "demo_procurement_emergency",
+    "user_id": 1,
+    "question": "紧急采购可以先口头审批吗，多久内补流程？",
+    "reference_answer": "紧急采购可先口头审批，但需在 2 个工作日内补齐流程。",
+    "expected_document_contains": "demo_procurement_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["口头审批", ["2个工作日", "2 个工作日"], "补齐流程"]
+  },
+  {
+    "id": "demo_remote_apply_notice",
+    "user_id": 1,
+    "question": "远程办公需要提前多久申请？",
+    "reference_answer": "员工应提前 1 个工作日向直属主管申请远程办公。",
+    "expected_document_contains": "demo_remote_work_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["提前1个工作日", "提前 1 个工作日"], "直属主管"]
+  },
+  {
+    "id": "demo_remote_security",
+    "user_id": 1,
+    "question": "远程办公连接公司系统必须使用什么？",
+    "reference_answer": "远程办公连接公司系统必须使用 VPN，并遵守数据安全规范。",
+    "expected_document_contains": "demo_remote_work_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["VPN", "数据安全规范"]
+  },
+  {
+    "id": "demo_remote_over_5_days",
+    "user_id": 1,
+    "question": "连续远程办公超过5个工作日需要什么审批？",
+    "reference_answer": "连续远程办公超过 5 个工作日，需部门负责人审批并报 HR 备案。",
+    "expected_document_contains": "demo_remote_work_policy.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["超过5个工作日", "超过 5 个工作日"], "部门负责人审批", "HR备案"]
+  },
+  {
+    "id": "demo_asset_definition",
+    "user_id": 1,
+    "question": "哪些设备属于固定资产？",
+    "reference_answer": "固定资产包括笔记本电脑、显示器、服务器、测试设备、办公家具和单价 2000 元以上且使用周期超过 1 年的设备。",
+    "expected_document_contains": "demo_asset_management.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["笔记本电脑", "显示器", "服务器", ["2000元", "2000 元"], ["超过1年", "超过 1 年"]]
+  },
+  {
+    "id": "demo_asset_inventory",
+    "user_id": 1,
+    "question": "固定资产每年什么时候盘点？",
+    "reference_answer": "每年第四季度行政部门组织一次资产盘点。",
+    "expected_document_contains": "demo_asset_management.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["第四季度", "资产盘点"]
+  },
+  {
+    "id": "demo_asset_damage",
+    "user_id": 1,
+    "question": "因个人原因造成资产遗失或严重损坏如何处理？",
+    "reference_answer": "因个人原因造成资产遗失或严重损坏的，需根据资产残值和责任认定进行赔偿。",
+    "expected_document_contains": "demo_asset_management.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": ["个人原因", "资产残值", "责任认定", "赔偿"]
+  },
+  {
+    "id": "demo_incident_report_time",
+    "user_id": 1,
+    "question": "发现信息安全事件后多久内通知安全团队？",
+    "reference_answer": "发现信息安全事件后，应在 30 分钟内通知信息安全团队。",
+    "expected_document_contains": "demo_incident_response.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["30分钟", "30 分钟"], "信息安全团队"]
+  },
+  {
+    "id": "demo_incident_high_risk",
+    "user_id": 1,
+    "question": "高危安全事件多久内启动应急响应？",
+    "reference_answer": "高危事件需 1 小时内启动应急响应。",
+    "expected_document_contains": "demo_incident_response.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["1小时", "1 小时"], "应急响应"]
+  },
+  {
+    "id": "demo_incident_review",
+    "user_id": 1,
+    "question": "安全事件关闭后多久内输出复盘报告？",
+    "reference_answer": "事件关闭后 3 个工作日内输出复盘报告。",
+    "expected_document_contains": "demo_incident_response.md",
+    "expected_chunk_indices": [0],
+    "expected_answer_terms": [["3个工作日", "3 个工作日"], "复盘报告"]
+  }
+]

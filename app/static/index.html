@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Enterprise Knowledge Agent</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>Enterprise Knowledge Agent</h1>
+        <p>Document RAG Workspace</p>
+      </div>
+      <div class="user-control">
+        <label for="userId">User ID</label>
+        <input id="userId" type="number" min="1" value="1" />
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel upload-panel">
+        <div class="panel-header">
+          <h2>Documents</h2>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+
+        <form id="uploadForm" class="upload-box">
+          <input id="fileInput" type="file" accept=".txt,.md,.pdf" />
+          <button id="uploadBtn" type="submit">Upload</button>
+        </form>
+
+        <div class="status-row">
+          <span id="documentSummary">0 documents</span>
+          <span id="uploadStatus"></span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>File</th>
+                <th>Type</th>
+                <th>Chunks</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="documentsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel query-panel">
+        <div class="panel-header">
+          <h2>Query</h2>
+          <span id="queryStatus"></span>
+        </div>
+
+        <form id="queryForm" class="query-form">
+          <textarea id="queryInput" rows="5" placeholder="输入一个和文档相关的问题"></textarea>
+          <button id="queryBtn" type="submit">Query</button>
+        </form>
+
+        <section class="answer-section">
+          <h3>Answer Candidates</h3>
+          <pre id="answerBox">No query yet.</pre>
+        </section>
+
+        <details class="context-section">
+          <summary>Retrieved Context</summary>
+          <pre id="contextBox">No context yet.</pre>
+        </details>
+
+        <section class="sources-section">
+          <h3>Sources</h3>
+          <div id="sourcesList" class="sources-list"></div>
+        </section>
+
+        <details class="trace-section">
+          <summary>Trace</summary>
+          <div id="traceTimeline" class="trace-timeline empty">No trace yet.</div>
+          <details class="trace-json-section">
+            <summary>Raw JSON</summary>
+            <pre id="traceBox">No trace yet.</pre>
+          </details>
+        </details>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

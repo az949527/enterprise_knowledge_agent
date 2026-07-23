@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+
+# Local environments
+.venv/
+.venv-*/
+venv/
+
+# IDE and browser automation
+.idea/
+.vscode/
+.playwright-mcp/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# User documents, indexes, databases, and generated traces
+data/
+outputs/
+
+# Build outputs
+build/
+dist/
+*.spec
+
+# OS metadata
+.DS_Store
+Thumbs.db

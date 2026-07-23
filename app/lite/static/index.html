@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>本地知识库轻量工具</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/styles.css?v=20260721-knowledge-manage" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <h1>本地知识库轻量工具</h1>
+          <p>本地目录索引与轻量问答</p>
+        </div>
+        <span id="status">就绪</span>
+      </header>
+
+      <section class="panel">
+        <h2>LLM 设置</h2>
+        <div class="settings-grid">
+          <label>
+            API Key
+            <input id="apiKeyInput" type="password" placeholder="填写你的 LLM API Key" autocomplete="off" />
+          </label>
+          <label>
+            Base URL
+            <input id="baseUrlInput" type="url" placeholder="https://api.deepseek.com" />
+          </label>
+          <label>
+            Model
+            <input id="modelInput" type="text" placeholder="deepseek-v4-flash" />
+          </label>
+        </div>
+        <div class="meta">API Key 只保存在当前浏览器本地，查询时发送给本机服务使用。</div>
+      </section>
+
+      <section class="panel">
+        <h2>添加知识文档</h2>
+        <div class="pickers">
+          <label class="file-button">
+            选择文件
+            <input id="filePicker" type="file" multiple accept=".txt,.md,.pdf" />
+          </label>
+          <label class="file-button">
+            选择文件夹
+            <input id="folderPicker" type="file" multiple webkitdirectory />
+          </label>
+        </div>
+        <div id="selectedFiles" class="meta">尚未选择文档。可选择 `.txt`、`.md`、`.pdf` 文件或文件夹。</div>
+        <div id="indexResult" class="meta">选择文档后会自动构建索引，完成后即可提问。Lite 版只查询当前添加的文档。</div>
+      </section>
+
+      <section class="panel">
+        <h2>已添加文档</h2>
+        <div id="documentsList" class="documents-list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>提问</h2>
+        <textarea id="queryInput" rows="4" placeholder="输入一个和本地文档相关的问题"></textarea>
+        <div class="query-actions">
+          <label class="checkbox">
+            <input id="useLlm" type="checkbox" checked />
+            使用 LLM 汇总答案
+          </label>
+          <button id="queryBtn" type="button">查询</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>答案</h2>
+        <pre id="answerBox">尚未查询。</pre>
+      </section>
+
+      <section class="panel">
+        <h2>引用来源</h2>
+        <div id="sourcesList" class="sources"></div>
+      </section>
+    </main>
+
+    <script src="/static/app.js?v=20260721-source-meta-fix"></script>
+  </body>
+</html>

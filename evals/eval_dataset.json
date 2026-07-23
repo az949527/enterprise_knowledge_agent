@@ -1,0 +1,92 @@
+[
+  {
+    "id": "duck_egg_main_topic",
+    "user_id": 1,
+    "question": "这篇文档主要讲什么？",
+    "reference_answer": "文档研究了基于近红外光谱的腌制期咸鸭蛋理化指标无损检测，建立蛋黄含水率、蛋黄氯化钠浓度和咸蛋黄指数等关键品质指标的快速检测模型。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [0, 1, 4, 5, 6],
+    "expected_answer_terms": ["咸鸭蛋", "近红外光谱", ["无损检测", "无损快速检测"], ["理化指标", "质量指标", "品质指标"]]
+  },
+  {
+    "id": "duck_egg_target_indicators",
+    "user_id": 1,
+    "question": "这篇文章检测了咸鸭蛋哪些关键品质指标？",
+    "reference_answer": "文章检测的关键品质指标包括蛋黄含水率、蛋黄氯化钠浓度和咸蛋黄指数。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [0, 1, 11, 12],
+    "expected_answer_terms": ["蛋黄含水率", "蛋黄氯化钠浓度", "咸蛋黄指数"]
+  },
+  {
+    "id": "duck_egg_spectral_method",
+    "user_id": 1,
+    "question": "文章用什么仪器和光谱采集方式进行检测？",
+    "reference_answer": "文章使用近红外光谱技术，具体通过 Antaris II 傅里叶变换近红外光谱仪采集咸鸭蛋漫反射光谱。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [0, 3, 8, 12, 13],
+    "expected_answer_terms": ["近红外光谱", "傅里叶变换", "漫反射光谱"]
+  },
+  {
+    "id": "duck_egg_preprocessing",
+    "user_id": 1,
+    "question": "文章用了哪些光谱预处理方法？",
+    "reference_answer": "文章使用的光谱预处理方法包括多元散射校正 MSC、卷积平滑 Savitzky-Golay、标准化 Autoscales、均值中心化 Center、移动窗口平滑 Nirmaf、标准正态变量变换 SNV 和归一化 Normalize。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [0, 4, 15],
+    "expected_answer_terms": ["MSC", "Savitzky-Golay", "Autoscales", "Center", "SNV", "Normalize"]
+  },
+  {
+    "id": "duck_egg_maturity_standard",
+    "user_id": 1,
+    "question": "咸鸭蛋成熟的感官和理化指标是什么？",
+    "reference_answer": "感官成熟标志包括蛋黄咸淡适中、橘黄丰润、口感细腻、出油较好；理化成熟标志包括咸蛋黄指数接近 1、蛋黄含盐量小于 2%、蛋黄含水率小于 30%、蛋白含盐量小于 5%、蛋白含水率小于 80%、蛋黄含油率低于 15%。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [12],
+    "expected_answer_terms": ["咸蛋黄指数", "含盐量", "含水率", "出油"]
+  },
+  {
+    "id": "duck_egg_pickling_duration",
+    "user_id": 1,
+    "question": "这篇文章里的咸鸭蛋腌制需要多久？",
+    "reference_answer": "腌制分两步：先用饱和食盐水腌制 12 天，再用 10% 食盐水继续腌制 28 天，总计约 40 天。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [11, 12],
+    "expected_answer_terms": [["12天", "12 天"], ["28天", "28 天"], ["40天", "40 天"], "10%"]
+  },
+  {
+    "id": "duck_egg_vinegar_pretreatment",
+    "user_id": 1,
+    "question": "腌制前为什么要用食用醋浸泡鸭蛋？",
+    "reference_answer": "腌制前用 5% 食用醋浸泡 10 分钟，是为了增加蛋壳外膜和蛋壳渗透性，使腌制液更容易进入蛋内部，从而减少腌制时间。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [11],
+    "expected_answer_terms": [["5%", "食用醋"], ["10min", "10分钟", "10 分钟", "浸泡"], "渗透性", "减少腌制时间"]
+  },
+  {
+    "id": "duck_egg_sample_count",
+    "user_id": 1,
+    "question": "试验用了多少枚鸭蛋样本？",
+    "reference_answer": "试验采用新鲜高邮麻鸭蛋作为样本，共选取 189 枚原料蛋。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [11],
+    "expected_answer_terms": [["189枚", "189 枚"]]
+  },
+  {
+    "id": "duck_egg_measurement_frequency",
+    "user_id": 1,
+    "question": "腌制过程中多久测一次数据，每次取多少枚？",
+    "reference_answer": "腌制过程中每隔五天测一次数据，每次取出 21 枚用于测定光谱和理化品质指标。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [12],
+    "expected_answer_terms": [["每隔五天", "每隔5天", "每隔 5 天"], ["21枚", "21 枚"]]
+  },
+  {
+    "id": "duck_egg_best_models",
+    "user_id": 1,
+    "question": "三项理化指标对应的最优模型分别是什么？",
+    "reference_answer": "蛋黄含水率最优模型是 Autoscales-UVE-SPA-PLSR，蛋黄氯化钠浓度最优模型是 S_G-UVE-SPA-PLSR，咸蛋黄指数最优模型是 Center-UVE-SPA-PLSR。",
+    "expected_document_contains": "咸鸭蛋理化指标无损检测",
+    "expected_chunk_indices": [1, 34, 36, 37],
+    "expected_answer_terms": ["Autoscales-UVE-SPA-PLSR", "S_G-UVE-SPA-PLSR", "Center-UVE-SPA-PLSR"]
+  }
+]
