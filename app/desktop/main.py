@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -34,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.lite.generator import answer_query
+from app.lite.desktop_query import query_desktop_index
 from app.lite.indexer import (
     SUPPORTED_EXTENSIONS,
     build_index_from_uploads,
@@ -42,13 +41,17 @@ from app.lite.indexer import (
     extract_text,
     list_index_documents,
 )
-from app.lite.search import search_index
+from app.lite.remote_retrieval import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_RERANKER_MODEL,
+    DEFAULT_RETRIEVAL_BASE_URL,
+)
 
 
 APP_NAME = "Local Knowledge Tool"
 ORGANIZATION = "EnterpriseKnowledgeAgent"
 SETTINGS_APP_NAME = "Local Knowledge Tool Desktop 1.0"
-SETTINGS_SCHEMA_VERSION = 1
+SETTINGS_SCHEMA_VERSION = 2
 
 
 def desktop_index_dir() -> Path:
@@ -59,19 +62,6 @@ def desktop_index_dir() -> Path:
         return Path("data/lite_index").resolve()
     app_data = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
     return Path(app_data).resolve() / "lite_index"
-
-
-def filter_sources_by_answer(answer: str, sources: List[Dict[str, Any]], mode: str) -> List[Dict[str, Any]]:
-    if mode == "llm_error":
-        return []
-    cited_ranks = []
-    for value in re.findall(r"\[(\d+)\]", answer or ""):
-        rank = int(value)
-        if 1 <= rank <= len(sources) and rank not in cited_ranks:
-            cited_ranks.append(rank)
-    if not cited_ranks:
-        return sources
-    return [sources[rank - 1] for rank in cited_ranks]
 
 
 class IndexWorker(QThread):
@@ -105,38 +95,50 @@ class QueryWorker(QThread):
         query: str,
         index_dir: Path,
         use_llm: bool,
-        api_key: str,
-        base_url: str,
-        model: str,
+        llm_api_key: str,
+        llm_base_url: str,
+        llm_model: str,
+        use_embedding: bool,
+        use_reranker: bool,
+        retrieval_api_key: str,
+        retrieval_base_url: str,
+        embedding_model: str,
+        reranker_model: str,
     ) -> None:
         super().__init__()
         self.query = query
         self.index_dir = index_dir
         self.use_llm = use_llm
-        self.api_key = api_key
-        self.base_url = base_url
-        self.model = model
+        self.llm_api_key = llm_api_key
+        self.llm_base_url = llm_base_url
+        self.llm_model = llm_model
+        self.use_embedding = use_embedding
+        self.use_reranker = use_reranker
+        self.retrieval_api_key = retrieval_api_key
+        self.retrieval_base_url = retrieval_base_url
+        self.embedding_model = embedding_model
+        self.reranker_model = reranker_model
 
     def run(self) -> None:
         try:
-            sources = search_index(self.query, self.index_dir, top_k=5)
             result = asyncio.run(
-                answer_query(
+                query_desktop_index(
                     self.query,
-                    sources,
-                    self.use_llm,
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    model=self.model,
+                    self.index_dir,
+                    top_k=5,
+                    use_llm=self.use_llm,
+                    llm_api_key=self.llm_api_key,
+                    llm_base_url=self.llm_base_url,
+                    llm_model=self.llm_model,
+                    use_embedding=self.use_embedding,
+                    use_reranker=self.use_reranker,
+                    retrieval_api_key=self.retrieval_api_key,
+                    retrieval_base_url=self.retrieval_base_url,
+                    embedding_model=self.embedding_model,
+                    reranker_model=self.reranker_model,
                 )
             )
-            display_sources = filter_sources_by_answer(result["answer"], sources, result["mode"])
-            self.completed.emit({
-                "answer": result["answer"],
-                "mode": result["mode"],
-                "sources": display_sources,
-                "llm": result.get("llm") or {},
-            })
+            self.completed.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -150,6 +152,7 @@ class MainWindow(QMainWindow):
         self.settings.setFallbacksEnabled(False)
         self._initialize_release_settings()
         self._workers: List[QThread] = []
+        self._settings_loading = False
 
         self.setWindowTitle("本地知识库")
         self.setMinimumSize(780, 620)
@@ -171,7 +174,10 @@ class MainWindow(QMainWindow):
         current_version = int(self.settings.value("release/schema_version", 0) or 0)
         if current_version >= SETTINGS_SCHEMA_VERSION:
             return
-        self.settings.remove("llm/api_key")
+        if current_version < 1:
+            self.settings.remove("llm/api_key")
+        if current_version < 2:
+            self.settings.remove("retrieval/api_key")
         self.settings.setValue("release/schema_version", SETTINGS_SCHEMA_VERSION)
         self.settings.sync()
 
@@ -194,6 +200,10 @@ class MainWindow(QMainWindow):
         self.use_llm_checkbox = QCheckBox("使用 LLM 汇总答案")
         self.use_llm_checkbox.setChecked(True)
         actions.addWidget(self.use_llm_checkbox)
+        self.use_embedding_checkbox = QCheckBox("使用远程 Embedding")
+        actions.addWidget(self.use_embedding_checkbox)
+        self.use_reranker_checkbox = QCheckBox("使用远程 Reranker")
+        actions.addWidget(self.use_reranker_checkbox)
         actions.addStretch()
 
         self.ask_button = QPushButton("查询")
@@ -294,56 +304,189 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
-        heading = QLabel("LLM 设置")
+        heading = QLabel("模型设置")
         heading.setObjectName("pageTitle")
         layout.addWidget(heading)
 
-        form = QFormLayout()
-        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        llm_heading = QLabel("LLM")
+        llm_heading.setObjectName("sectionTitle")
+        layout.addWidget(llm_heading)
+
+        llm_form = QFormLayout()
+        llm_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.api_key_input = QLineEdit()
         self.api_key_input.setEchoMode(QLineEdit.Password)
         self.api_key_input.setPlaceholderText("填写你的 LLM API Key")
-        form.addRow("API Key", self.api_key_input)
+        llm_form.addRow("API Key", self.api_key_input)
 
         self.base_url_input = QLineEdit()
         self.base_url_input.setPlaceholderText("https://api.deepseek.com")
-        form.addRow("Base URL", self.base_url_input)
+        llm_form.addRow("Base URL", self.base_url_input)
 
         self.model_input = QLineEdit()
         self.model_input.setPlaceholderText("deepseek-v4-flash")
-        form.addRow("Model", self.model_input)
-        layout.addLayout(form)
+        llm_form.addRow("Model", self.model_input)
+        layout.addLayout(llm_form)
+
+        retrieval_heading = QLabel("远程检索")
+        retrieval_heading.setObjectName("sectionTitle")
+        layout.addWidget(retrieval_heading)
+
+        retrieval_form = QFormLayout()
+        retrieval_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.retrieval_api_key_input = QLineEdit()
+        self.retrieval_api_key_input.setEchoMode(QLineEdit.Password)
+        self.retrieval_api_key_input.setPlaceholderText("填写 Embedding / Reranker API Key")
+        retrieval_form.addRow("API Key", self.retrieval_api_key_input)
+
+        self.retrieval_base_url_input = QLineEdit()
+        self.retrieval_base_url_input.setPlaceholderText(DEFAULT_RETRIEVAL_BASE_URL)
+        retrieval_form.addRow("Base URL", self.retrieval_base_url_input)
+
+        self.embedding_model_input = QLineEdit()
+        self.embedding_model_input.setPlaceholderText(DEFAULT_EMBEDDING_MODEL)
+        retrieval_form.addRow("Embedding Model", self.embedding_model_input)
+
+        self.reranker_model_input = QLineEdit()
+        self.reranker_model_input.setPlaceholderText(DEFAULT_RERANKER_MODEL)
+        retrieval_form.addRow("Reranker Model", self.reranker_model_input)
+        layout.addLayout(retrieval_form)
 
         actions = QHBoxLayout()
+        self.save_feedback = QLabel("已加载保存的设置")
+        self.save_feedback.setObjectName("mutedText")
+        actions.addWidget(self.save_feedback)
         actions.addStretch()
-        save_button = QPushButton("保存设置")
-        save_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
-        save_button.clicked.connect(self.save_settings)
-        actions.addWidget(save_button)
+        self.save_button = QPushButton("设置已保存")
+        self.save_button.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
+        self.save_button.setDisabled(True)
+        self.save_button.clicked.connect(self.save_settings)
+        actions.addWidget(self.save_button)
         layout.addLayout(actions)
 
-        note = QLabel("设置保存在当前系统用户配置中。使用 LLM 时，API Key 会发送到配置的服务地址。")
+        note = QLabel(
+            "设置保存在当前系统用户配置中。启用远程检索时，文档片段和问题会发送到配置的服务地址。"
+        )
         note.setWordWrap(True)
         note.setObjectName("mutedText")
         layout.addWidget(note)
         layout.addStretch()
+
+        for line_edit in (
+            self.api_key_input,
+            self.base_url_input,
+            self.model_input,
+            self.retrieval_api_key_input,
+            self.retrieval_base_url_input,
+            self.embedding_model_input,
+            self.reranker_model_input,
+        ):
+            line_edit.textChanged.connect(self._mark_settings_dirty)
+        for checkbox in (
+            self.use_llm_checkbox,
+            self.use_embedding_checkbox,
+            self.use_reranker_checkbox,
+        ):
+            checkbox.stateChanged.connect(self._mark_settings_dirty)
         return page
 
     def _load_settings(self) -> None:
-        self.api_key_input.setText(self.settings.value("llm/api_key", "", str))
-        self.base_url_input.setText(
-            self.settings.value("llm/base_url", "https://api.deepseek.com", str)
-        )
-        self.model_input.setText(
-            self.settings.value("llm/model", "deepseek-v4-flash", str)
-        )
+        self._settings_loading = True
+        try:
+            self.api_key_input.setText(self.settings.value("llm/api_key", "", str))
+            self.base_url_input.setText(
+                self.settings.value("llm/base_url", "https://api.deepseek.com", str)
+            )
+            self.model_input.setText(
+                self.settings.value("llm/model", "deepseek-v4-flash", str)
+            )
+            self.retrieval_api_key_input.setText(
+                self.settings.value("retrieval/api_key", "", str)
+            )
+            self.retrieval_base_url_input.setText(
+                self.settings.value(
+                    "retrieval/base_url",
+                    DEFAULT_RETRIEVAL_BASE_URL,
+                    str,
+                )
+            )
+            self.embedding_model_input.setText(
+                self.settings.value(
+                    "retrieval/embedding_model",
+                    DEFAULT_EMBEDDING_MODEL,
+                    str,
+                )
+            )
+            self.reranker_model_input.setText(
+                self.settings.value(
+                    "retrieval/reranker_model",
+                    DEFAULT_RERANKER_MODEL,
+                    str,
+                )
+            )
+            self.use_llm_checkbox.setChecked(
+                self.settings.value("features/use_llm", True, bool)
+            )
+            self.use_embedding_checkbox.setChecked(
+                self.settings.value("features/use_embedding", False, bool)
+            )
+            self.use_reranker_checkbox.setChecked(
+                self.settings.value("features/use_reranker", False, bool)
+            )
+        finally:
+            self._settings_loading = False
+        self._set_settings_saved_state("已加载保存的设置")
 
     def save_settings(self) -> None:
         self.settings.setValue("llm/api_key", self.api_key_input.text().strip())
         self.settings.setValue("llm/base_url", self.base_url_input.text().strip())
         self.settings.setValue("llm/model", self.model_input.text().strip())
+        self.settings.setValue(
+            "retrieval/api_key",
+            self.retrieval_api_key_input.text().strip(),
+        )
+        self.settings.setValue(
+            "retrieval/base_url",
+            self.retrieval_base_url_input.text().strip(),
+        )
+        self.settings.setValue(
+            "retrieval/embedding_model",
+            self.embedding_model_input.text().strip(),
+        )
+        self.settings.setValue(
+            "retrieval/reranker_model",
+            self.reranker_model_input.text().strip(),
+        )
+        self.settings.setValue("features/use_llm", self.use_llm_checkbox.isChecked())
+        self.settings.setValue(
+            "features/use_embedding",
+            self.use_embedding_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "features/use_reranker",
+            self.use_reranker_checkbox.isChecked(),
+        )
         self.settings.sync()
-        self.statusBar().showMessage("LLM 设置已保存", 4000)
+        self._set_settings_saved_state("设置已保存到当前系统用户")
+        self.statusBar().showMessage("模型设置已保存", 4000)
+
+    def _mark_settings_dirty(self, *_args) -> None:
+        if self._settings_loading:
+            return
+        self.save_button.setText("保存设置")
+        self.save_button.setEnabled(True)
+        self.save_feedback.setText("有未保存的更改")
+        self.save_feedback.setObjectName("warningText")
+        self.save_feedback.style().unpolish(self.save_feedback)
+        self.save_feedback.style().polish(self.save_feedback)
+
+    def _set_settings_saved_state(self, message: str) -> None:
+        self.save_button.setText("设置已保存")
+        self.save_button.setDisabled(True)
+        self.save_feedback.setText(message)
+        self.save_feedback.setObjectName("savedText")
+        self.save_feedback.style().unpolish(self.save_feedback)
+        self.save_feedback.style().polish(self.save_feedback)
 
     def choose_files(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -445,9 +588,15 @@ class MainWindow(QMainWindow):
             query=query,
             index_dir=self.index_dir,
             use_llm=self.use_llm_checkbox.isChecked(),
-            api_key=self.api_key_input.text().strip(),
-            base_url=self.base_url_input.text().strip(),
-            model=self.model_input.text().strip(),
+            llm_api_key=self.api_key_input.text().strip(),
+            llm_base_url=self.base_url_input.text().strip(),
+            llm_model=self.model_input.text().strip(),
+            use_embedding=self.use_embedding_checkbox.isChecked(),
+            use_reranker=self.use_reranker_checkbox.isChecked(),
+            retrieval_api_key=self.retrieval_api_key_input.text().strip(),
+            retrieval_base_url=self.retrieval_base_url_input.text().strip(),
+            embedding_model=self.embedding_model_input.text().strip(),
+            reranker_model=self.reranker_model_input.text().strip(),
         )
         worker.completed.connect(self._query_completed)
         worker.failed.connect(self._task_failed)
@@ -463,8 +612,14 @@ class MainWindow(QMainWindow):
         mode = str(payload.get("mode") or "")
         if mode == "llm_error":
             self.statusBar().showMessage("LLM 配置或请求失败", 7000)
+        elif mode == "embedding_error":
+            self.statusBar().showMessage("Embedding 配置或请求失败", 7000)
+        elif mode == "reranker_error":
+            self.statusBar().showMessage("Reranker 配置或请求失败", 7000)
         elif mode == "llm":
             self.statusBar().showMessage("LLM 回答完成", 5000)
+        elif payload.get("retrieval", {}).get("embedding") or payload.get("retrieval", {}).get("reranker"):
+            self.statusBar().showMessage("远程检索完成", 5000)
         else:
             self.statusBar().showMessage("本地检索完成", 5000)
 
@@ -569,6 +724,12 @@ QLabel#sectionTitle {
 }
 QLabel#mutedText {
     color: #687383;
+}
+QLabel#savedText {
+    color: #067647;
+}
+QLabel#warningText {
+    color: #a15c00;
 }
 QLabel#sourceFilename {
     color: #556274;

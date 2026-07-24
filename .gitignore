@@ -22,6 +22,22 @@ venv/
 # User documents, indexes, databases, and generated traces
 data/
 outputs/
+user_documents/
+indexes/
+**/lite_index*/
+**/chunks.jsonl
+**/bm25_index.sqlite3
+**/bm25_index.sqlite3-shm
+**/bm25_index.sqlite3-wal
+**/embeddings.f32
+**/embeddings_manifest.json
+**/faiss_index.bin
+**/enterprise_knowledge_agent.db
+
+# Local evaluation harnesses tied to private document datasets
+scripts/eval_desktop_modes.py
+scripts/eval_desktop_llm_judge.py
+tests/test_llm_judge_eval.py
 
 # Build outputs
 build/

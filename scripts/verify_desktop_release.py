@@ -33,9 +33,10 @@ def configured_api_keys() -> list[str]:
         ):
             settings = QSettings("EnterpriseKnowledgeAgent", app_name)
             settings.setFallbacksEnabled(False)
-            value = str(settings.value("llm/api_key", "") or "")
-            if value and value not in keys:
-                keys.append(value)
+            for setting_name in ("llm/api_key", "retrieval/api_key"):
+                value = str(settings.value(setting_name, "") or "")
+                if value and value not in keys:
+                    keys.append(value)
         return keys
     except Exception:
         return []
@@ -60,7 +61,17 @@ def verify_release(root: Path, release_dir: Path) -> None:
         names = ", ".join(path.name for path in env_files)
         raise SystemExit(f"Release blocked: environment files exist in the project root: {names}")
 
-    forbidden_names = {"chunks.jsonl", "manifest.json", "faiss_index.bin", "enterprise_knowledge_agent.db"}
+    forbidden_names = {
+        "chunks.jsonl",
+        "manifest.json",
+        "embeddings.f32",
+        "embeddings_manifest.json",
+        "bm25_index.sqlite3",
+        "bm25_index.sqlite3-shm",
+        "bm25_index.sqlite3-wal",
+        "faiss_index.bin",
+        "enterprise_knowledge_agent.db",
+    }
     known_filenames = read_known_filenames(root)
     api_keys = configured_api_keys()
     api_key_bytes = []
