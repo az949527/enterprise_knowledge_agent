@@ -7,7 +7,7 @@ import re
 import sqlite3
 from typing import Any
 
-from app.lite.indexer import DEFAULT_INDEX_DIR, read_chunks
+from app.lite.indexer import DEFAULT_INDEX_DIR, chunk_structure, read_chunks
 from app.lite.search import noise_penalty, query_intent_bonus
 
 
@@ -237,6 +237,7 @@ def _first_results(chunks: list[dict[str, Any]], top_k: int) -> list[dict[str, A
 
 def _record_to_result(record: dict[str, Any], score: float, rank: int) -> dict[str, Any]:
     return {
+        **chunk_structure(record),
         "rank": rank,
         "score": float(score),
         "source_path": record.get("source_path"),

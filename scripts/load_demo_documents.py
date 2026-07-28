@@ -15,6 +15,7 @@ from sqlalchemy import delete, select
 
 from app.core.config import settings
 from app.core.database import async_session_factory, init_db
+from app.documents import DocumentNode, NodeType, document_id_from_source
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.rag.chunker import TextChunker
@@ -55,9 +56,23 @@ async def load_demo_documents(args: argparse.Namespace) -> None:
                 print(f"SKIP existing: {path.name}")
                 continue
 
-            text = path.read_text(encoding="utf-8")
-            chunks = TextChunker.chunk_text(text, settings.CHUNK_SIZE, settings.CHUNK_OVERLAP)
-            print(f"{path.name}: {len(text)} chars -> {len(chunks)} chunks")
+            node = DocumentNode(
+                document_id=document_id_from_source(path.name),
+                content=path.read_text(encoding="utf-8"),
+                parser_version="demo_markdown_v1",
+                node_type=NodeType.TEXT,
+                source_anchor={"source_path": path.name},
+                metadata={"filename": path.name, "file_type": ".md"},
+            )
+            chunks = TextChunker.chunk_node(
+                node,
+                settings.CHUNK_SIZE,
+                settings.CHUNK_OVERLAP,
+            )
+            print(
+                f"{path.name}: {len(node.content)} chars -> "
+                f"{len(chunks)} chunks"
+            )
 
             if not args.load:
                 continue

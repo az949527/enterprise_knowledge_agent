@@ -4,8 +4,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-
-Set-Location (Split-Path -Parent $PSScriptRoot)
+$Root = Split-Path -Parent $PSScriptRoot
+Set-Location $Root
 
 if (-not (Test-Path -LiteralPath $PythonExe)) {
     throw "Python 3.11 was not found at: $PythonExe"
@@ -16,25 +16,22 @@ if ($Version.Trim() -ne "3.11") {
     throw "Python 3.11 is required. Selected interpreter reports: $Version"
 }
 
-$VenvPython = Join-Path (Get-Location) ".venv-desktop\Scripts\python.exe"
+$VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $VenvPython)) {
-    Write-Host "Creating desktop virtual environment..."
-    & $PythonExe -m venv .venv-desktop
+    Write-Host "Creating Python 3.11 backend environment..."
+    & $PythonExe -m venv .venv
 }
 
-Write-Host "Installing desktop dependencies..."
-Write-Host "Qt Essentials download is approximately 75 MB."
-Write-Host "Package index: $IndexUrl"
-Write-Host ""
-
+Write-Host "Installing backend dependencies..."
 & $VenvPython -m pip install `
   --progress-bar on `
   --timeout 120 `
   --retries 5 `
   --index-url $IndexUrl `
-  -r requirements-desktop.txt
+  -r requirements.txt
 
 Write-Host ""
-Write-Host "Desktop dependencies installed."
-Write-Host "Run the application with:"
-Write-Host "  .\scripts\run_desktop.ps1"
+Write-Host "Backend environment ready:"
+Write-Host "  .\.venv\Scripts\python.exe"
+Write-Host "Run the backend with:"
+Write-Host "  .\scripts\run_web.ps1"

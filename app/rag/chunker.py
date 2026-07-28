@@ -12,6 +12,8 @@ from __future__ import annotations
 """
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from app.documents import DocumentNode
+
 
 class TextChunker:
     """文本分块器，将文档切分成适合 RAG 检索的片段"""
@@ -25,3 +27,15 @@ class TextChunker:
             length_function=len,
         )
         return splitter.split_text(text)
+
+    @staticmethod
+    def chunk_node(
+        node: DocumentNode,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50,
+    ) -> list[str]:
+        return TextChunker.chunk_text(
+            node.search_content,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )

@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.lite.indexer import DEFAULT_INDEX_DIR
+from app.lite.indexer import DEFAULT_INDEX_DIR, chunk_structure
 
 
 def search_index(query: str, index_dir: str | Path = DEFAULT_INDEX_DIR, top_k: int = 5) -> list[dict[str, Any]]:
@@ -72,6 +72,7 @@ def search_index(query: str, index_dir: str | Path = DEFAULT_INDEX_DIR, top_k: i
 
 def _record_to_result(record: dict[str, Any], score: float) -> dict[str, Any]:
     return {
+        **chunk_structure(record),
         "rank": 0,
         "score": score,
         "source_path": record.get("source_path"),

@@ -2,6 +2,24 @@
 
 主线定位：做一个“可评估、可追踪的企业知识库 Agent”。
 
+## Python 环境
+
+本项目只支持 Python 3.11。Windows 完整后端环境：
+
+```powershell
+.\scripts\install.ps1
+.\scripts\run_web.ps1
+```
+
+桌面环境：
+
+```powershell
+.\scripts\install_desktop.ps1
+.\scripts\run_desktop.ps1
+```
+
+不要直接使用系统 `python`；完整说明见 `docs/PYTHON_ENVIRONMENT.md`。
+
 本项目从 `investment_agent` 的探索中拆出，长期方向不再押注“投资收益型 Agent”，而是建设一个更通用、更容易落地和展示的知识工作台：
 
 1. 企业文档上传、解析、分块、索引。
@@ -40,8 +58,8 @@
 
 当前已删除第一版脚本闭环，切换为借鉴 `membrain` 的后端 RAG 基线，并补了一个轻量前端工作台：
 
-```bash
-uvicorn app.main:app --reload
+```powershell
+.\scripts\run_web.ps1
 ```
 
 浏览器入口：
@@ -93,13 +111,13 @@ http://127.0.0.1:8000/
 
 ## 当前评估入口
 
-```bash
-python scripts/eval_retrieval.py --top-k 5
-python scripts/eval_retrieval.py --top-k 5 --candidate-k 10 --compare-reranker
-python scripts/eval_rag.py
-python scripts/eval_rag.py --no-llm --no-reranker --limit 2
-python scripts/load_demo_documents.py --load
-python scripts/eval_rag.py --dataset evals/demo_enterprise_eval_dataset.json --no-llm --no-reranker
+```powershell
+.\.venv\Scripts\python.exe scripts/eval_retrieval.py --top-k 5
+.\.venv\Scripts\python.exe scripts/eval_retrieval.py --top-k 5 --candidate-k 10 --compare-reranker
+.\.venv\Scripts\python.exe scripts/eval_rag.py
+.\.venv\Scripts\python.exe scripts/eval_rag.py --no-llm --no-reranker --limit 2
+.\.venv\Scripts\python.exe scripts/load_demo_documents.py --load
+.\.venv\Scripts\python.exe scripts/eval_rag.py --dataset evals/demo_enterprise_eval_dataset.json --no-llm --no-reranker
 ```
 
 当前小型评估集：
@@ -132,22 +150,22 @@ python scripts/eval_rag.py --dataset evals/demo_enterprise_eval_dataset.json --n
 
 构建索引：
 
-```bash
-python scripts/lite_index.py --source-dir demo_documents
+```powershell
+.\.venv-desktop\Scripts\python.exe scripts/lite_index.py --source-dir demo_documents
 ```
 
 轻量 Web 中也可以直接点击“选择文件”或“选择文件夹”，选择完成后会自动构建索引。
 
 CLI 查询：
 
-```bash
-python scripts/lite_query.py "远程办公需要提前多久申请？" --no-llm
+```powershell
+.\.venv-desktop\Scripts\python.exe scripts/lite_query.py "远程办公需要提前多久申请？" --no-llm
 ```
 
 启动轻量 Web：
 
-```bash
-python scripts/run_lite.py
+```powershell
+.\.venv\Scripts\python.exe scripts/run_lite.py
 ```
 
 打开：

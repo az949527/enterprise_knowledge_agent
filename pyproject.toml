@@ -1,0 +1,5 @@
+[project]
+name = "enterprise-knowledge-agent"
+version = "0.1.0"
+description = "Desktop-first enterprise knowledge retrieval and evaluation tool."
+requires-python = ">=3.11,<3.12"

@@ -1,5 +1,7 @@
 # Next Steps
 
+> 所有命令均要求 Python 3.11。Windows 完整后端使用 `.\.venv\Scripts\python.exe`，桌面和轻量回归使用 `.\.venv-desktop\Scripts\python.exe`，不要直接调用系统 Anaconda Python 3.8。
+
 ## 当前状态
 
 按用户要求，第一版脚本闭环已删除，项目切换为借鉴 `membrain` 的后端 RAG 基线。

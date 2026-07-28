@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "baseline_id": "enterprise_policy_p0_1_v1",
+  "name": "Enterprise policy P0-1 regression baseline",
+  "frozen_at": "2026-07-27",
+  "dataset": "evals/demo_enterprise_eval_dataset.json",
+  "dataset_sha256": "75b231b4333a746b9f8faa4b045af95a8687a7df5054fa9c724ed02ecf8401ca",
+  "case_count": 30,
+  "documents_dir": "demo_documents",
+  "documents_sha256": "c67f6c713d8bd3d48eceacde6ae0c41d370c16511960f1af2fa5a4767bf907e6",
+  "baseline_report": "evals/baselines/p0_1_lite_bm25.json",
+  "baseline_markdown": "evals/baselines/p0_1_lite_bm25.md",
+  "required_metrics": [
+    "recall_at_5",
+    "mrr",
+    "answer_coverage",
+    "citation_accuracy",
+    "avg_latency_ms",
+    "p95_latency_ms",
+    "index_elapsed_ms",
+    "index_peak_memory_bytes",
+    "index_disk_bytes",
+    "api_tokens",
+    "api_cost_usd"
+  ],
+  "extension_dataset": "evals/p0_1_extension_cases.json",
+  "extension_types": [
+    "plain_text",
+    "pdf_cross_page",
+    "pdf_table",
+    "xlsx",
+    "refusal"
+  ],
+  "acceptance_gate": {
+    "max_absolute_quality_drop": 0.01,
+    "require_same_baseline_id": true,
+    "require_same_dataset_sha256": true,
+    "require_same_case_ids_sha256": true,
+    "gate_each_shared_case_type": true
+  }
+}

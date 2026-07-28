@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 
-from app.lite.indexer import DEFAULT_INDEX_DIR, read_chunks
+from app.lite.indexer import DEFAULT_INDEX_DIR, chunk_structure, read_chunks
 
 
 DEFAULT_RETRIEVAL_BASE_URL = "https://api.siliconflow.cn/v1"
@@ -74,6 +74,7 @@ def semantic_search_index(
         record = chunks[index]
         results.append(
             {
+                **chunk_structure(record),
                 "rank": rank,
                 "score": float(score),
                 "source_path": record.get("source_path"),

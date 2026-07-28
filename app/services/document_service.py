@@ -5,18 +5,23 @@ from __future__ import annotations
 """
 
 import os
+from pathlib import Path
 from uuid import uuid4
 import aiofiles
 from fastapi import UploadFile, HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
+from app.documents import DocumentNode, NodeType
 from app.models.document import Document
 from app.models.chunk import Chunk
 from app.rag.chunker import TextChunker
 from app.rag.embedder import Embedder
 from app.rag.vector_store import VectorStore
 from app.core.logger import logger
+
+
+WEB_PARSER_VERSION = "web_legacy_text_v1"
 
 
 class DocumentService:
@@ -56,13 +61,24 @@ class DocumentService:
         await db.flush()    # 拿到doc.id
 
         try:
-            # 4、提取文本
-            text = await DocumentService._extract_text(file_path,ext)
+            # 4、提取统一文档节点
+            nodes = await DocumentService._extract_nodes(
+                file_path,
+                ext,
+                document_id=f"db_document_{doc.id}",
+                source_path=file.filename,
+            )
 
             # 5、分块
-            chunks = TextChunker.chunk_text(
-                text, settings.CHUNK_SIZE, settings.CHUNK_OVERLAP
-            )
+            chunks = []
+            for node in nodes:
+                chunks.extend(
+                    TextChunker.chunk_node(
+                        node,
+                        settings.CHUNK_SIZE,
+                        settings.CHUNK_OVERLAP,
+                    )
+                )
 
             # 6、向量化
             vectors = embedder.embed(chunks)
@@ -100,17 +116,49 @@ class DocumentService:
 
     @staticmethod
     async def _extract_text(file_path: str,file_type: str) -> str:
-        """根据文件类型提取文本"""
+        """兼容旧调用；内部解析结果统一使用 DocumentNode。"""
+        nodes = await DocumentService._extract_nodes(
+            file_path,
+            file_type,
+            document_id=f"file_{Path(file_path).name}",
+            source_path=Path(file_path).name,
+        )
+        return "\n".join(node.content for node in nodes)
+
+    @staticmethod
+    async def _extract_nodes(
+        file_path: str,
+        file_type: str,
+        *,
+        document_id: str,
+        source_path: str,
+    ) -> list[DocumentNode]:
+        """按现有提取行为生成统一文档节点。"""
         if file_type == "pdf":
             import fitz     #PyMuPDF
             text = ""
             with fitz.open(file_path) as doc:
                 for page in doc:
                     text += page.get_text()
-            return text
-        # txt/ md 直接读取
-        async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
-            return await f.read()
+        else:
+            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
+                text = await f.read()
+        if not text.strip():
+            return []
+        return [
+            DocumentNode(
+                document_id=document_id,
+                content=text,
+                parser_version=WEB_PARSER_VERSION,
+                node_type=NodeType.TEXT,
+                sequence=0,
+                source_anchor={"source_path": source_path},
+                metadata={
+                    "filename": source_path,
+                    "file_type": file_type,
+                },
+            )
+        ]
 
     @staticmethod
     async def list_documents(db: AsyncSession, user_id: int) -> list[Document]:

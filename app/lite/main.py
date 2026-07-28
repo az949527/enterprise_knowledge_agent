@@ -15,9 +15,9 @@ from app.lite.indexer import (
     DEFAULT_INDEX_DIR,
     SUPPORTED_EXTENSIONS,
     build_index,
-    build_index_from_uploads,
+    build_index_from_nodes,
     delete_index_document,
-    extract_text_from_bytes,
+    extract_document_nodes_from_bytes,
     list_index_documents,
 )
 from app.lite.search import search_index
@@ -97,17 +97,20 @@ async def index_uploaded_documents(
     files: List[UploadFile] = File(...),
     index_dir: str = Form(default=str(DEFAULT_INDEX_DIR)),
 ):
-    documents = []
+    nodes = []
     for file in files:
         suffix = Path(file.filename or "").suffix.lower()
         if suffix not in SUPPORTED_EXTENSIONS:
             continue
         content = await file.read()
-        text = extract_text_from_bytes(file.filename or "untitled", content)
-        if text.strip():
-            documents.append((file.filename or "untitled", text))
+        nodes.extend(
+            extract_document_nodes_from_bytes(
+                file.filename or "untitled",
+                content,
+            )
+        )
 
-    if not documents:
+    if not nodes:
         return {
             "source_dir": "browser_upload",
             "index_dir": str(Path(index_dir).resolve()),
@@ -115,7 +118,11 @@ async def index_uploaded_documents(
             "chunk_count": 0,
         }
 
-    stats = build_index_from_uploads(documents, index_dir)
+    stats = build_index_from_nodes(
+        nodes,
+        index_dir,
+        source_label="browser_upload",
+    )
     return stats.__dict__
 
 

@@ -36,9 +36,9 @@ from PySide6.QtWidgets import (
 from app.lite.desktop_query import query_desktop_index
 from app.lite.indexer import (
     SUPPORTED_EXTENSIONS,
-    build_index_from_uploads,
+    build_index_from_nodes,
     delete_index_document,
-    extract_text,
+    extract_document_nodes,
     list_index_documents,
 )
 from app.lite.remote_retrieval import (
@@ -75,12 +75,12 @@ class IndexWorker(QThread):
 
     def run(self) -> None:
         try:
-            documents = []
+            nodes = []
             for path in self.paths:
-                text = extract_text(path)
-                if text.strip():
-                    documents.append((path.name, text))
-            stats = build_index_from_uploads(documents, self.index_dir)
+                nodes.extend(
+                    extract_document_nodes(path, source_path=path.name)
+                )
+            stats = build_index_from_nodes(nodes, self.index_dir)
             self.completed.emit(stats.__dict__)
         except Exception as exc:
             self.failed.emit(str(exc))

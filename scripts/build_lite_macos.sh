@@ -3,9 +3,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-python3 -m pip install -r requirements-lite.txt
+PYTHON_BIN="${PYTHON_BIN:-python3.11}"
+PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+if [[ "$PYTHON_VERSION" != "3.11" ]]; then
+  echo "Python 3.11 is required. Current version: $PYTHON_VERSION" >&2
+  exit 1
+fi
 
-python3 -m PyInstaller \
+"$PYTHON_BIN" -m pip install -r requirements-lite.txt
+
+"$PYTHON_BIN" -m PyInstaller \
   --name LocalKnowledgeTool \
   --onefile \
   --clean \

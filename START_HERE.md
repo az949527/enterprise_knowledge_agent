@@ -1,5 +1,14 @@
 # Start Here
 
+运行环境统一为 Python 3.11。Windows 首次进入项目先执行：
+
+```powershell
+.\scripts\install.ps1
+.\scripts\install_desktop.ps1
+```
+
+不要直接使用可能指向 Anaconda Python 3.8 的系统 `python`。
+
 新会话进入本项目时，先读这三个文件：
 
 1. `memory/PROJECT_MEMORY.md`
@@ -30,4 +39,3 @@ python scripts/ask.py "根据文档回答一个问题"
 ## 给新会话助手的提示
 
 如果用户说“继续这个项目”，不要重新讨论方向选择，直接读取上述记忆文件，然后从 `docs/NEXT_STEPS.md` 的第一阶段继续。
-

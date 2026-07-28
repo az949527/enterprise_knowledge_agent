@@ -1,5 +1,26 @@
 # Decisions
 
+## 2026-07-27：项目运行环境统一为 Python 3.11
+
+决策：
+
+> 完整后端、桌面应用、评估脚本和构建流程统一使用 Python 3.11，不再兼容 Python 3.8。
+
+实现：
+
+- `.python-version` 和 `pyproject.toml` 声明 Python 3.11。
+- 完整后端环境使用 `.venv`。
+- 桌面环境使用 `.venv-desktop`。
+- `app/__init__.py` 导入时校验解释器版本。
+- Windows 和 macOS 安装、运行、构建脚本拒绝非 Python 3.11。
+- 删除 `DocumentNode` 的 Python 3.8 dataclass 兼容分支。
+
+理由：
+
+- 桌面发布和 GitHub Actions 已使用 Python 3.11。
+- `dataclass(slots=True)` 等结构层实现不需要继续维护旧版本分支。
+- 在 P0-3 解析管线重构前统一版本，可以减少后续双版本测试和兼容成本。
+
 ## 2026-07-16：主线方向
 
 决策：

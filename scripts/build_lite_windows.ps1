@@ -2,9 +2,18 @@ $ErrorActionPreference = "Stop"
 
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-python -m pip install -r requirements-lite.txt
+$VenvPython = Join-Path (Get-Location) ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $VenvPython)) {
+  throw "Backend environment is missing. Run .\scripts\install.ps1 first."
+}
+$Version = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+if ($Version.Trim() -ne "3.11") {
+  throw "Lite build requires Python 3.11. Current version: $Version"
+}
 
-python -m PyInstaller `
+& $VenvPython -m pip install -r requirements-lite.txt
+
+& $VenvPython -m PyInstaller `
   --name LocalKnowledgeTool `
   --onefile `
   --clean `

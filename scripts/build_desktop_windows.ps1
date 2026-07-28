@@ -11,6 +11,10 @@ $VenvPython = Join-Path $Root ".venv-desktop\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $VenvPython)) {
     throw "Desktop environment is missing. Run .\scripts\install_desktop.ps1 first."
 }
+$Version = & $VenvPython -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+if ($Version.Trim() -ne "3.11") {
+    throw "Desktop environment must use Python 3.11. Current version: $Version"
+}
 
 Write-Host "Installing build dependency..."
 & $VenvPython -m pip install `
