@@ -1,0 +1,146 @@
+[
+  {
+    "id": "manufacturing_duration",
+    "domain": "manufacturing",
+    "query": "陶瓷坯体干燥多久？",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "background",
+        "text": "陶瓷坯体干燥流程需要控制温度、湿度和送风速度。",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "陶瓷坯体干燥持续 8 小时，完成后进入烧制步骤。",
+        "faiss_score": 0.6
+      }
+    ]
+  },
+  {
+    "id": "it_duration",
+    "domain": "information_technology",
+    "query": "高危告警需要多久响应？",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "background",
+        "text": "高危告警响应流程由值班工程师和安全负责人共同维护。",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "高危告警必须在 15 分钟内响应，并立即记录处置状态。",
+        "faiss_score": 0.6
+      }
+    ]
+  },
+  {
+    "id": "procurement_quantity",
+    "domain": "procurement",
+    "query": "采购询价需要几家供应商？",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "background",
+        "text": "采购询价需要保存供应商报价和沟通记录。",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "采购询价至少需要 3 家供应商提供有效报价。",
+        "faiss_score": 0.6
+      }
+    ]
+  },
+  {
+    "id": "finance_amount",
+    "domain": "finance",
+    "query": "一线城市住宿标准是多少？",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "background",
+        "text": "一线城市住宿标准由财务部门根据市场情况定期复核。",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "一线城市住宿标准为每晚不超过 600 元。",
+        "faiss_score": 0.6
+      }
+    ]
+  },
+  {
+    "id": "legal_process",
+    "domain": "legal",
+    "query": "合同归档如何办理？",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "background",
+        "text": "合同归档包括纸质合同和电子合同两种材料类型。",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "办理流程为提交归档申请、法务复核、负责人审批后入库。",
+        "faiss_score": 0.6
+      }
+    ]
+  },
+  {
+    "id": "hr_process",
+    "domain": "human_resources",
+    "query": "入职账号怎么开通？",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "background",
+        "text": "入职账号包括邮箱、协作平台和业务系统账号。",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "开通步骤为 HR 提交申请、直属主管审批、IT 创建账号。",
+        "faiss_score": 0.6
+      }
+    ]
+  },
+  {
+    "id": "operations_summary",
+    "domain": "operations",
+    "query": "总结一下仓库盘点文档",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "background",
+        "text": "仓库盘点文档附有库位编码和物料分类明细。",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "仓库盘点文档概述：说明盘点准备、差异复核和库存调整要求。",
+        "faiss_score": 0.6
+      }
+    ]
+  },
+  {
+    "id": "generic_noise",
+    "domain": "administration",
+    "query": "访客登记需要提交什么？",
+    "expected_candidate": "answer",
+    "candidates": [
+      {
+        "id": "footer",
+        "text": "访客登记\n12\n12\n12\nhttps://example.com",
+        "faiss_score": 0.6
+      },
+      {
+        "id": "answer",
+        "text": "访客登记需要提交姓名、联系电话和被访部门。",
+        "faiss_score": 0.6
+      }
+    ]
+  }
+]

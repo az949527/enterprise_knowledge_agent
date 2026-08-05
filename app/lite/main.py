@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
 from app.lite.generator import answer_query
 from app.lite.indexer import (
     DEFAULT_INDEX_DIR,
@@ -19,13 +20,20 @@ from app.lite.indexer import (
     delete_index_document,
     extract_document_nodes_from_bytes,
     list_index_documents,
+    rebuild_index,
 )
+from app.lite.index_diagnostics import diagnose_index
 from app.lite.search import search_index
+from app.security.remote_access import set_remote_access
+
+
+set_remote_access(settings.REMOTE_ACCESS_ENABLED)
 
 
 class IndexRequest(BaseModel):
     source_dir: str = Field(default="demo_documents")
     index_dir: str = Field(default=str(DEFAULT_INDEX_DIR))
+    force_rebuild: bool = False
 
 
 class QueryRequest(BaseModel):
@@ -88,8 +96,16 @@ async def index_status(index_dir: str = str(DEFAULT_INDEX_DIR)):
 
 @app.post("/api/lite/index")
 async def index_documents(payload: IndexRequest):
-    stats = build_index(payload.source_dir, payload.index_dir)
+    if payload.force_rebuild:
+        stats = rebuild_index(payload.source_dir, payload.index_dir)
+    else:
+        stats = build_index(payload.source_dir, payload.index_dir)
     return stats.__dict__
+
+
+@app.get("/api/lite/index/diagnostics")
+async def index_diagnostics(index_dir: str = str(DEFAULT_INDEX_DIR)):
+    return diagnose_index(index_dir)
 
 
 @app.post("/api/lite/index/upload")

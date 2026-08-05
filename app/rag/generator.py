@@ -6,7 +6,8 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.rag.retriever import RAGRetriever
+from app.security.redaction import redact_secrets
+from app.security.remote_access import remote_access_enabled
 
 
 ANSWER_PROMPT = """你是企业知识库问答助手。请只基于给定资料回答用户问题。
@@ -32,7 +33,7 @@ class RAGAnswerGenerator:
     """Generate an answer from retrieved chunks with a local fallback."""
 
     async def generate(self, query: str, chunks: list) -> dict:
-        context = RAGRetriever.build_rag_context(chunks)
+        context = _build_rag_context(chunks)
         if not chunks:
             return {
                 "answer": "当前知识库没有检索到足够相关的内容。",
@@ -42,7 +43,7 @@ class RAGAnswerGenerator:
                 "llm": _llm_metadata(context=context),
             }
 
-        if settings.LLM_API_KEY:
+        if settings.LLM_API_KEY and remote_access_enabled():
             llm_result = await self._generate_with_llm(query, context)
             if llm_result["answer"]:
                 return {
@@ -53,6 +54,12 @@ class RAGAnswerGenerator:
                     "llm": llm_result["llm"],
                 }
             llm_metadata = llm_result["llm"]
+        elif settings.LLM_API_KEY:
+            llm_metadata = _llm_metadata(
+                context=context,
+                enabled=False,
+                error="offline_mode",
+            )
         else:
             llm_metadata = _llm_metadata(context=context)
 
@@ -71,6 +78,16 @@ class RAGAnswerGenerator:
     async def _generate_with_llm(self, query: str, context: str) -> dict:
         prompt = ANSWER_PROMPT.format(query=query, context=context)
         started = perf_counter()
+        if not remote_access_enabled():
+            return {
+                "answer": "",
+                "llm": _llm_metadata(
+                    context=context,
+                    prompt=prompt,
+                    enabled=False,
+                    error="offline_mode",
+                ),
+            }
         try:
             from openai import AsyncOpenAI
 
@@ -102,14 +119,18 @@ class RAGAnswerGenerator:
                 ),
             }
         except Exception as exc:
-            logger.warning("LLM answer generation failed, fallback to extractive answer: %s", exc)
+            safe_error = redact_secrets(exc)
+            logger.warning(
+                "LLM answer generation failed, fallback to extractive answer: %s",
+                safe_error,
+            )
             return {
                 "answer": "",
                 "llm": _llm_metadata(
                     context=context,
                     prompt=prompt,
                     elapsed_ms=int((perf_counter() - started) * 1000),
-                    error=str(exc),
+                    error=safe_error,
                 ),
             }
 
@@ -137,6 +158,21 @@ def _best_sentence(text: str, query_terms: set) -> str:
     return _strip_source_citations(best)[:240].strip()
 
 
+def _build_rag_context(chunks: list[dict]) -> str:
+    if not chunks:
+        return ""
+    parts = [
+        "以下是与问题相关的知识库内容（每条可能不完整，请结合你的知识回答）：",
+        "---",
+    ]
+    for index, chunk in enumerate(chunks, 1):
+        parts.append(
+            f"[{index}] {chunk.get('expanded_content') or chunk.get('content', '')}"
+        )
+    parts.append("---")
+    return "\n\n".join(parts)
+
+
 def _strip_source_citations(text: str) -> str:
     return re.sub(r"\[\d+\]", "", text)
 
@@ -150,9 +186,10 @@ def _llm_metadata(
     response_model: str | None = None,
     usage: Any = None,
     error: str | None = None,
+    enabled: bool | None = None,
 ) -> dict:
     return {
-        "enabled": bool(settings.LLM_API_KEY),
+        "enabled": bool(settings.LLM_API_KEY) if enabled is None else enabled,
         "base_url": settings.LLM_BASE_URL,
         "configured_model": settings.LLM_MODEL,
         "response_model": response_model,

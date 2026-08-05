@@ -12,10 +12,12 @@ from app.rag.generator import RAGAnswerGenerator
 from app.rag.reranker import Reranker
 from app.rag.vector_store import VectorStore
 from app.routers.document import router as document_router
+from app.security.remote_access import set_remote_access
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    set_remote_access(settings.REMOTE_ACCESS_ENABLED)
     os.makedirs("data", exist_ok=True)
     os.makedirs(settings.DOCUMENTS_DIR, exist_ok=True)
     os.makedirs(settings.TRACE_DIR, exist_ok=True)

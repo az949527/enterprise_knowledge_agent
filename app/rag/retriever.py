@@ -14,6 +14,7 @@ from sqlalchemy import select
 from app.rag.reranker import Reranker
 from app.rag.hyde import HyDE
 from app.core.logger import logger
+from app.security.redaction import redact_secrets
 
 
 class RAGRetriever:
@@ -47,7 +48,10 @@ class RAGRetriever:
             # 2、FAISS搜索，返回[(chunk_id, similarity), ...]
             results = self.vector_store.search(query_vec, top_k)
         except Exception as exc:
-            logger.warning("Vector retrieval failed, fallback to lexical retrieval: %s", exc)
+            logger.warning(
+                "Vector retrieval failed, fallback to lexical retrieval: %s",
+                redact_secrets(exc),
+            )
         results = await self._merge_lexical_candidates(query, results, user_id)
         if not results:
             return []

@@ -18,7 +18,14 @@ class DocumentNodeTests(unittest.TestCase):
     def test_node_types_cover_p0_2_contract(self) -> None:
         self.assertEqual(
             {item.value for item in NodeType},
-            {"text", "table", "figure", "sheet_summary", "row_group"},
+            {
+                "text",
+                "table",
+                "figure",
+                "workbook_summary",
+                "sheet_summary",
+                "row_group",
+            },
         )
 
     def test_ids_and_content_hash_are_deterministic(self) -> None:

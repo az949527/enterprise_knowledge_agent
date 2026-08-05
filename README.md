@@ -18,7 +18,7 @@
 .\scripts\run_desktop.ps1
 ```
 
-不要直接使用系统 `python`；完整说明见 `docs/PYTHON_ENVIRONMENT.md`。
+不要直接使用系统 `python`；完整说明见 `docs/DEVELOPMENT_GUIDE.md`。
 
 本项目从 `investment_agent` 的探索中拆出，长期方向不再押注“投资收益型 Agent”，而是建设一个更通用、更容易落地和展示的知识工作台：
 
@@ -178,6 +178,6 @@ http://127.0.0.1:8010/
 
 新会话开始时，先读：
 
-1. `memory/PROJECT_MEMORY.md`
-2. `docs/ROADMAP.md`
-3. `docs/NEXT_STEPS.md`
+1. `docs/DEVELOPMENT_PLAN.md`
+
+确定任务后，再按需查看 `docs/README.md` 中的专题文档和相关代码。

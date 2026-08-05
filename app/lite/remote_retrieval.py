@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from array import array
+from collections import defaultdict, deque
 from dataclasses import dataclass
 import hashlib
 import heapq
@@ -12,7 +13,15 @@ from typing import Any
 
 import httpx
 
-from app.lite.indexer import DEFAULT_INDEX_DIR, chunk_structure, read_chunks
+from app.lite.indexer import (
+    DEFAULT_INDEX_DIR,
+    chunk_search_text,
+    chunk_structure,
+    ensure_index_format,
+    read_chunks,
+)
+from app.security.redaction import redact_secrets
+from app.security.remote_access import remote_access_enabled, set_remote_access
 
 
 DEFAULT_RETRIEVAL_BASE_URL = "https://api.siliconflow.cn/v1"
@@ -20,13 +29,21 @@ DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
 DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
 EMBEDDING_CACHE_FILE = "embeddings.f32"
 EMBEDDING_CACHE_MANIFEST = "embeddings_manifest.json"
-EMBEDDING_CACHE_VERSION = 1
+EMBEDDING_CACHE_VERSION = 2
 
 
 class RemoteModelError(RuntimeError):
     def __init__(self, mode: str, message: str) -> None:
         super().__init__(message)
         self.mode = mode
+
+
+def _assert_remote_access(mode: str) -> None:
+    if not remote_access_enabled():
+        raise RemoteModelError(
+            mode,
+            "当前处于完全离线模式，已禁止远程调用。请关闭离线模式或仅使用本地检索。",
+        )
 
 
 @dataclass(frozen=True)
@@ -44,9 +61,13 @@ def semantic_search_index(
     api_key: str,
     base_url: str = DEFAULT_RETRIEVAL_BASE_URL,
     model: str = DEFAULT_EMBEDDING_MODEL,
+    source_paths: set[str] | None = None,
+    node_types: set[str] | None = None,
 ) -> list[dict[str, Any]]:
+    _assert_remote_access("embedding_error")
     config = _validated_config("embedding_error", "Embedding", api_key, base_url, model)
     index_path = Path(index_dir).expanduser().resolve()
+    ensure_index_format(index_path)
     chunks = read_chunks(index_path)
     if not chunks:
         raise FileNotFoundError(f"Lite index not found or empty: {index_path}")
@@ -61,8 +82,24 @@ def semantic_search_index(
         )
 
     query_norm = _vector_norm(query_vector)
+    normalized_source_paths = (
+        {str(value).casefold() for value in source_paths}
+        if source_paths
+        else None
+    )
+    normalized_node_types = (
+        {str(value).casefold() for value in node_types}
+        if node_types
+        else None
+    )
     scored: list[tuple[float, int]] = []
     for index in range(len(chunks)):
+        if not _chunk_matches_filters(
+            chunks[index],
+            source_paths=normalized_source_paths,
+            node_types=normalized_node_types,
+        ):
+            continue
         start = index * dimension
         vector = vectors[start : start + dimension]
         score = _cosine_similarity(query_vector, query_norm, vector)
@@ -99,6 +136,7 @@ def rerank_sources(
     if not candidates:
         return []
 
+    _assert_remote_access("reranker_error")
     config = _validated_config("reranker_error", "Reranker", api_key, base_url, model)
     payload = _post_json(
         config,
@@ -106,7 +144,7 @@ def rerank_sources(
         {
             "model": config.model,
             "query": query,
-            "documents": [str(candidate.get("content") or "") for candidate in candidates],
+            "documents": [chunk_search_text(candidate) for candidate in candidates],
             "top_n": min(max(top_n, 1), len(candidates)),
             "return_documents": False,
         },
@@ -141,6 +179,7 @@ def embed_texts(
     if not texts:
         return []
 
+    _assert_remote_access(mode)
     vectors: list[list[float]] = []
     with httpx.Client(timeout=60.0) as client:
         for start in range(0, len(texts), batch_size):
@@ -182,22 +221,69 @@ def _load_or_create_embedding_cache(
     config: RemoteModelConfig,
 ) -> tuple[array, int]:
     fingerprint = _chunks_fingerprint(chunks)
-    cached = _load_embedding_cache(index_path, fingerprint, len(chunks), config)
+    chunk_keys = _chunk_cache_keys(chunks)
+    cached = _load_embedding_cache_state(index_path, config)
     if cached is not None:
-        return cached
+        cached_vectors, dimension, cached_keys, cached_fingerprint = cached
+        if cached_fingerprint == fingerprint and cached_keys == chunk_keys:
+            return cached_vectors, dimension
+    else:
+        cached_vectors = array("f")
+        cached_keys = []
+        dimension = 0
 
-    vectors = embed_texts(
-        [str(chunk.get("content") or "") for chunk in chunks],
-        config,
-        mode="embedding_error",
+    cached_positions: dict[str, deque[int]] = defaultdict(deque)
+    for index, key in enumerate(cached_keys):
+        cached_positions[key].append(index)
+    reused_positions: dict[int, int] = {}
+    missing_positions: list[int] = []
+    missing_texts: list[str] = []
+    for index, (chunk, key) in enumerate(zip(chunks, chunk_keys)):
+        if cached_positions[key]:
+            reused_positions[index] = cached_positions[key].popleft()
+        else:
+            missing_positions.append(index)
+            missing_texts.append(chunk_search_text(chunk))
+
+    new_vectors = (
+        embed_texts(missing_texts, config, mode="embedding_error")
+        if missing_texts
+        else []
     )
-    dimension = len(vectors[0])
+    if new_vectors:
+        new_dimension = len(new_vectors[0])
+        if dimension and new_dimension != dimension:
+            raise RemoteModelError(
+                "embedding_error",
+                "Embedding 模型维度发生变化，请删除旧缓存后重试。",
+            )
+        dimension = dimension or new_dimension
+        if any(len(vector) != dimension for vector in new_vectors):
+            raise RemoteModelError(
+                "embedding_error",
+                "Embedding 返回的文档向量维度不一致。",
+            )
+    if dimension <= 0:
+        raise RemoteModelError("embedding_error", "Embedding 返回了空向量。")
+
+    new_by_position = dict(zip(missing_positions, new_vectors))
     flattened = array("f")
-    for vector in vectors:
-        if len(vector) != dimension:
-            raise RemoteModelError("embedding_error", "Embedding 返回的文档向量维度不一致。")
-        flattened.extend(vector)
-    _write_embedding_cache(index_path, flattened, dimension, len(chunks), fingerprint, config)
+    for index in range(len(chunks)):
+        cached_index = reused_positions.get(index)
+        if cached_index is not None:
+            start = cached_index * dimension
+            flattened.extend(cached_vectors[start : start + dimension])
+        else:
+            flattened.extend(new_by_position[index])
+    _write_embedding_cache(
+        index_path,
+        flattened,
+        dimension,
+        len(chunks),
+        fingerprint,
+        chunk_keys,
+        config,
+    )
     return flattened, dimension
 
 
@@ -207,6 +293,19 @@ def _load_embedding_cache(
     chunk_count: int,
     config: RemoteModelConfig,
 ) -> tuple[array, int] | None:
+    cached = _load_embedding_cache_state(index_path, config)
+    if cached is None:
+        return None
+    flattened, dimension, chunk_keys, cached_fingerprint = cached
+    if cached_fingerprint != fingerprint or len(chunk_keys) != chunk_count:
+        return None
+    return flattened, dimension
+
+
+def _load_embedding_cache_state(
+    index_path: Path,
+    config: RemoteModelConfig,
+) -> tuple[array, int, list[str], str] | None:
     manifest_path = index_path / EMBEDDING_CACHE_MANIFEST
     vectors_path = index_path / EMBEDDING_CACHE_FILE
     if not manifest_path.exists() or not vectors_path.exists():
@@ -215,13 +314,17 @@ def _load_embedding_cache(
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         dimension = int(manifest["dimension"])
+        chunk_count = int(manifest.get("chunk_count") or 0)
+        chunk_keys = [
+            str(value)
+            for value in (manifest.get("chunk_keys") or [])
+        ]
         if (
             int(manifest.get("version") or 0) != EMBEDDING_CACHE_VERSION
-            or manifest.get("fingerprint") != fingerprint
-            or int(manifest.get("chunk_count") or 0) != chunk_count
             or manifest.get("model") != config.model
             or manifest.get("base_url") != _normalized_base_url(config.base_url)
             or dimension <= 0
+            or len(chunk_keys) != chunk_count
         ):
             return None
 
@@ -231,7 +334,12 @@ def _load_embedding_cache(
             flattened.byteswap()
         if len(flattened) != chunk_count * dimension:
             return None
-        return flattened, dimension
+        return (
+            flattened,
+            dimension,
+            chunk_keys,
+            str(manifest.get("fingerprint") or ""),
+        )
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
         return None
 
@@ -242,6 +350,7 @@ def _write_embedding_cache(
     dimension: int,
     chunk_count: int,
     fingerprint: str,
+    chunk_keys: list[str],
     config: RemoteModelConfig,
 ) -> None:
     index_path.mkdir(parents=True, exist_ok=True)
@@ -263,6 +372,7 @@ def _write_embedding_cache(
                 "dimension": dimension,
                 "chunk_count": chunk_count,
                 "fingerprint": fingerprint,
+                "chunk_keys": chunk_keys,
             },
             ensure_ascii=False,
             indent=2,
@@ -282,6 +392,7 @@ def _post_json(
     label: str,
     client: httpx.Client | None = None,
 ) -> dict[str, Any]:
+    _assert_remote_access(mode)
     endpoint = _api_endpoint(config.base_url, path)
     try:
         if client is None:
@@ -306,10 +417,13 @@ def _post_json(
     except httpx.TimeoutException as exc:
         raise RemoteModelError(mode, f"{label} 请求超时，请检查网络或稍后重试。") from exc
     except httpx.HTTPError as exc:
-        raise RemoteModelError(mode, f"{label} 请求失败，请检查网络和 Base URL。") from exc
+        raise RemoteModelError(
+            mode,
+            redact_secrets(f"{label} 请求失败，请检查网络和 Base URL。{exc}"),
+        ) from exc
 
     if response.status_code >= 400:
-        detail = _response_error_detail(response)
+        detail = redact_secrets(_response_error_detail(response))
         raise RemoteModelError(mode, f"{label} 请求失败（HTTP {response.status_code}）：{detail}")
     try:
         payload = response.json()
@@ -355,9 +469,44 @@ def _chunks_fingerprint(chunks: list[dict[str, Any]]) -> str:
     for chunk in chunks:
         digest.update(str(chunk.get("id") or "").encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(chunk.get("content") or "").encode("utf-8"))
+        digest.update(chunk_search_text(chunk).encode("utf-8"))
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _chunk_cache_keys(chunks: list[dict[str, Any]]) -> list[str]:
+    keys = []
+    for chunk in chunks:
+        digest = hashlib.sha256()
+        digest.update(str(chunk.get("id") or "").encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(
+            str(
+                chunk.get("search_text")
+                or chunk_search_text(chunk)
+            ).encode("utf-8")
+        )
+        keys.append(digest.hexdigest())
+    return keys
+
+
+def _chunk_matches_filters(
+    chunk: dict[str, Any],
+    *,
+    source_paths: set[str] | None,
+    node_types: set[str] | None,
+) -> bool:
+    if source_paths:
+        source_path = str(
+            chunk.get("source_path") or chunk.get("filename") or ""
+        ).casefold()
+        if source_path not in source_paths:
+            return False
+    if node_types:
+        node_type = str(chunk.get("node_type") or "").casefold()
+        if node_type not in node_types:
+            return False
+    return True
 
 
 def _vector_norm(vector) -> float:

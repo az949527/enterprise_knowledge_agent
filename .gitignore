@@ -13,6 +13,7 @@ venv/
 .idea/
 .vscode/
 .playwright-mcp/
+.codegraph/
 
 # Secrets
 .env
@@ -38,6 +39,7 @@ indexes/
 scripts/eval_desktop_modes.py
 scripts/eval_desktop_llm_judge.py
 tests/test_llm_judge_eval.py
+memory/
 
 # Build outputs
 build/

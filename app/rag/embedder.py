@@ -4,6 +4,8 @@ import os
 
 import numpy as np
 
+from app.security.remote_access import remote_access_enabled
+
 
 class Embedder:
     """惰性加载的 Embedding 模型封装
@@ -19,11 +21,15 @@ class Embedder:
     def _load_model(self):
         if self._model is not None:
             return
-        if "HF_ENDPOINT" not in os.environ:
+        allow_remote = remote_access_enabled()
+        if allow_remote and "HF_ENDPOINT" not in os.environ:
             os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
         # 延迟导入：sentence_transformers 包本身加载 torch/transformers 需要 ~450MB
         from sentence_transformers import SentenceTransformer
-        self._model = SentenceTransformer(self.model_name)
+        self._model = SentenceTransformer(
+            self.model_name,
+            local_files_only=not allow_remote,
+        )
 
     def embed(self, texts: list[str]) -> np.ndarray:
         self._load_model()

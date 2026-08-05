@@ -11,6 +11,8 @@ from openai import AsyncOpenAI
 
 from app.core.config import settings
 from app.core.logger import logger
+from app.security.redaction import redact_secrets
+from app.security.remote_access import remote_access_enabled
 
 HYDE_PROMPT = """请根据问题生成一段详细的技术回答，用于辅助搜索。
 
@@ -26,14 +28,18 @@ class HyDE:
     """HyDE 假设回答生成器"""
 
     def __init__(self):
-        self.client = AsyncOpenAI(
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
-        )
+        self.client = None
 
     async def generate(self, query: str) -> str:
         """生成假设回答"""
+        if not remote_access_enabled():
+            return query
         try:
+            if self.client is None:
+                self.client = AsyncOpenAI(
+                    api_key=settings.LLM_API_KEY,
+                    base_url=settings.LLM_BASE_URL,
+                )
             response = await self.client.chat.completions.create(
                 model=settings.LLM_MODEL,
                 messages=[{"role": "user", "content": HYDE_PROMPT.format(query=query)}],
@@ -43,6 +49,9 @@ class HyDE:
             hypo_answer = response.choices[0].message.content or ""
             logger.info("【HyDE】问题='%s' → 生成假设回答 %s 字", query[:30], len(hypo_answer))
             return hypo_answer
-        except Exception as e:
-            logger.warning("【HyDE 生成失败】%s，回退原始查询", e)
+        except Exception as exc:
+            logger.warning(
+                "【HyDE 生成失败】%s，回退原始查询",
+                redact_secrets(exc),
+            )
             return query

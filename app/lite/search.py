@@ -7,13 +7,19 @@ import re
 from pathlib import Path
 from typing import Any
 
-from app.lite.indexer import DEFAULT_INDEX_DIR, chunk_structure
+from app.lite.indexer import DEFAULT_INDEX_DIR, chunk_structure, ensure_index_format
+from app.retrieval_signals import (
+    looks_like_summary_query,
+    noise_penalty,
+    query_intent_bonus,
+)
 
 
 def search_index(query: str, index_dir: str | Path = DEFAULT_INDEX_DIR, top_k: int = 5) -> list[dict[str, Any]]:
     chunks_path = Path(index_dir).expanduser().resolve() / "chunks.jsonl"
     if not chunks_path.exists():
         raise FileNotFoundError(f"Lite index not found: {chunks_path}")
+    ensure_index_format(index_dir)
 
     query_terms = lexical_terms(query)
     if not query_terms:
@@ -48,7 +54,7 @@ def search_index(query: str, index_dir: str | Path = DEFAULT_INDEX_DIR, top_k: i
                 heapq.heappushpop(heap, (score, order, item))
 
     results = [item for _, _, item in sorted(heap, key=lambda row: row[0], reverse=True)]
-    if _looks_like_summary_query(query):
+    if looks_like_summary_query(query):
         if len(summary_chunks) < top_k:
             existing_ids = {
                 (item.get("source_path"), item.get("chunk_index"))
@@ -83,26 +89,6 @@ def _record_to_result(record: dict[str, Any], score: float) -> dict[str, Any]:
     }
 
 
-def _looks_like_summary_query(query: str) -> bool:
-    text = str(query).lower()
-    markers = (
-        "讲什么",
-        "讲了什么",
-        "说什么",
-        "说了什么",
-        "主要内容",
-        "总结",
-        "概括",
-        "摘要",
-        "介绍一下",
-        "this document",
-        "summarize",
-        "summary",
-        "overview",
-    )
-    return any(marker in text for marker in markers)
-
-
 def lexical_score(query_terms: set[str], text: str) -> float:
     text_terms = lexical_terms(text)
     if not text_terms:
@@ -111,41 +97,6 @@ def lexical_score(query_terms: set[str], text: str) -> float:
     recall = len(overlap) / len(query_terms)
     precision = len(overlap) / max(math.sqrt(len(text_terms)), 1.0)
     return recall * 0.75 + precision * 0.25
-
-
-def query_intent_bonus(query: str, text: str) -> float:
-    query_text = str(query)
-    text_text = str(text)
-    bonus = 0.0
-
-    asks_duration = any(marker in query_text for marker in ("多久", "几天", "多少天", "多长时间", "腌制时间"))
-    if asks_duration:
-        if "腌制方法" in text_text or "试验方法" in text_text:
-            bonus += 0.6
-        if "腌制" in text_text and "天" in text_text:
-            bonus += 0.8
-        if "继续腌制" in text_text:
-            bonus += 0.6
-        if "每隔" in text_text and "天" in text_text:
-            bonus += 0.4
-        if re.search(r"\d+\s*天", text_text):
-            bonus += 0.7
-
-    return bonus
-
-
-def noise_penalty(text: str) -> float:
-    text_text = str(text)
-    penalty = 0.0
-    if "参考文献" in text_text:
-        penalty += 0.8
-    if "DOI" in text_text:
-        penalty += 0.35
-    if "Fig." in text_text and "图" in text_text:
-        penalty += 0.15
-    return penalty
-
-
 def lexical_terms(text: str) -> set[str]:
     normalized = str(text).lower()
     latin_terms = set(re.findall(r"[a-z0-9]{2,}", normalized))

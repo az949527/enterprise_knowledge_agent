@@ -7,12 +7,22 @@ import re
 import sqlite3
 from typing import Any
 
-from app.lite.indexer import DEFAULT_INDEX_DIR, chunk_structure, read_chunks
-from app.lite.search import noise_penalty, query_intent_bonus
+from app.lite.indexer import (
+    DEFAULT_INDEX_DIR,
+    chunk_search_text,
+    chunk_structure,
+    ensure_index_format,
+    read_chunks,
+)
+from app.retrieval_signals import (
+    looks_like_summary_query,
+    noise_penalty,
+    query_intent_bonus,
+)
 
 
 BM25_INDEX_FILE = "bm25_index.sqlite3"
-BM25_INDEX_VERSION = 1
+BM25_INDEX_VERSION = 3
 MAX_QUERY_TOKENS = 96
 TECHNICAL_TOKEN_PATTERN = re.compile(
     r"[a-z0-9]+(?:[._%/\-][a-z0-9]+)*%?",
@@ -24,34 +34,72 @@ def search_bm25_index(
     query: str,
     index_dir: str | Path = DEFAULT_INDEX_DIR,
     top_k: int = 5,
+    *,
+    source_paths: set[str] | None = None,
+    node_types: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     index_path = Path(index_dir).expanduser().resolve()
+    ensure_index_format(index_path)
     chunks = read_chunks(index_path)
     if not chunks:
         raise FileNotFoundError(f"Lite index not found or empty: {index_path}")
+    normalized_source_paths = (
+        {str(value).casefold() for value in source_paths}
+        if source_paths
+        else None
+    )
+    normalized_node_types = (
+        {str(value).casefold() for value in node_types}
+        if node_types
+        else None
+    )
+    eligible_chunks = [
+        chunk
+        for chunk in chunks
+        if _chunk_matches_filters(
+            chunk,
+            normalized_source_paths,
+            normalized_node_types,
+        )
+    ]
+    if not eligible_chunks:
+        return []
 
-    if _looks_like_summary_query(query):
-        return _summary_results(chunks, top_k)
+    if looks_like_summary_query(query):
+        return _summary_results(eligible_chunks, top_k)
 
     query_tokens = _query_tokens(query)
     if not query_tokens:
-        return _first_results(chunks, top_k)
+        return _first_results(eligible_chunks, top_k)
 
     database_path = _ensure_bm25_index(index_path, chunks)
     match_expression = " OR ".join(f'"{token}"' for token in query_tokens)
     candidate_limit = max(top_k * 4, 20)
 
+    conditions = ["chunks_fts MATCH ?"]
+    parameters: list[Any] = [match_expression]
+    if normalized_source_paths:
+        normalized_sources = sorted(normalized_source_paths)
+        placeholders = ", ".join("?" for _ in normalized_sources)
+        conditions.append(f"source_path IN ({placeholders})")
+        parameters.extend(normalized_sources)
+    if normalized_node_types:
+        normalized_types = sorted(normalized_node_types)
+        placeholders = ", ".join("?" for _ in normalized_types)
+        conditions.append(f"node_type IN ({placeholders})")
+        parameters.extend(normalized_types)
+    parameters.append(candidate_limit)
     connection = sqlite3.connect(database_path)
     try:
         rows = connection.execute(
-            """
+            f"""
             SELECT chunk_order, bm25(chunks_fts) AS bm25_score
             FROM chunks_fts
-            WHERE chunks_fts MATCH ?
+            WHERE {" AND ".join(conditions)}
             ORDER BY bm25_score
             LIMIT ?
             """,
-            (match_expression, candidate_limit),
+            parameters,
         ).fetchall()
     finally:
         connection.close()
@@ -67,7 +115,7 @@ def search_bm25_index(
     ranked.sort(key=lambda item: item[0], reverse=True)
 
     if not ranked:
-        return _first_results(chunks, top_k)
+        return _first_results(eligible_chunks, top_k)
 
     results = []
     for rank, (score, chunk_order) in enumerate(ranked[: max(top_k, 1)], 1):
@@ -121,6 +169,8 @@ def _ensure_bm25_index(index_path: Path, chunks: list[dict[str, Any]]) -> Path:
             """
             CREATE VIRTUAL TABLE chunks_fts USING fts5(
                 chunk_order UNINDEXED,
+                source_path UNINDEXED,
+                node_type UNINDEXED,
                 tokens,
                 tokenize='unicode61'
             )
@@ -130,9 +180,19 @@ def _ensure_bm25_index(index_path: Path, chunks: list[dict[str, Any]]) -> Path:
             "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
         connection.executemany(
-            "INSERT INTO chunks_fts(chunk_order, tokens) VALUES (?, ?)",
+            "INSERT INTO chunks_fts(chunk_order, source_path, node_type, tokens) "
+            "VALUES (?, ?, ?, ?)",
             [
-                (index, _document_tokens(str(chunk.get("content") or "")))
+                (
+                    index,
+                    str(
+                        chunk.get("source_path")
+                        or chunk.get("filename")
+                        or ""
+                    ).casefold(),
+                    str(chunk.get("node_type") or "").casefold(),
+                    _document_tokens(chunk_search_text(chunk)),
+                )
                 for index, chunk in enumerate(chunks)
             ],
         )
@@ -184,7 +244,7 @@ def _chunks_fingerprint(chunks: list[dict[str, Any]]) -> str:
     for chunk in chunks:
         digest.update(str(chunk.get("id") or "").encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(chunk.get("content") or "").encode("utf-8"))
+        digest.update(chunk_search_text(chunk).encode("utf-8"))
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -201,6 +261,24 @@ def _normalize_technical_token(token: str) -> str:
     for source, target in replacements.items():
         normalized = normalized.replace(source, target)
     return f"tech{normalized}" if normalized else ""
+
+
+def _chunk_matches_filters(
+    chunk: dict[str, Any],
+    source_paths: set[str] | None,
+    node_types: set[str] | None,
+) -> bool:
+    if source_paths:
+        source_path = str(
+            chunk.get("source_path") or chunk.get("filename") or ""
+        ).casefold()
+        if source_path not in source_paths:
+            return False
+    if node_types:
+        node_type = str(chunk.get("node_type") or "").casefold()
+        if node_type not in node_types:
+            return False
+    return True
 
 
 def _summary_results(chunks: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
@@ -246,23 +324,3 @@ def _record_to_result(record: dict[str, Any], score: float, rank: int) -> dict[s
         "content": record.get("content", ""),
         "content_chars": record.get("content_chars", 0),
     }
-
-
-def _looks_like_summary_query(query: str) -> bool:
-    text = str(query).casefold()
-    markers = (
-        "讲什么",
-        "讲了什么",
-        "说什么",
-        "说了什么",
-        "主要内容",
-        "总结",
-        "概括",
-        "摘要",
-        "介绍一下",
-        "this document",
-        "summarize",
-        "summary",
-        "overview",
-    )
-    return any(marker in text for marker in markers)

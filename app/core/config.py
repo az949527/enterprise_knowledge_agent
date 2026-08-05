@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # 【跨项目通用】只要有 Web 服务都需要
     APP_NAME: str = "Enterprise Knowledge Agent"
     DEBUG: bool = False
+    REMOTE_ACCESS_ENABLED: bool = False
 
     # ==================== 数据库配置 ====================
     # 【跨项目通用】只需改连接串即可切换数据库

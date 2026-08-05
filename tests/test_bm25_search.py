@@ -59,6 +59,15 @@ class Bm25SearchTests(unittest.TestCase):
         self.assertNotEqual(before["fingerprint"], after["fingerprint"])
         self.assertEqual(after["chunk_count"], "4")
 
+    def test_corrupt_cache_is_diagnosed_by_rebuilding(self) -> None:
+        search_bm25_index("报销", self.index_dir, top_k=2)
+        (self.index_dir / BM25_INDEX_FILE).write_bytes(b"not a sqlite database")
+
+        results = search_bm25_index("密码多久更换", self.index_dir, top_k=2)
+
+        self.assertTrue(results)
+        self.assertEqual(self._metadata()["chunk_count"], "3")
+
     def _write_default_chunks(self) -> None:
         write_chunks(
             self.index_dir,

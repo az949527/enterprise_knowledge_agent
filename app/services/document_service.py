@@ -12,18 +12,17 @@ from fastapi import UploadFile, HTTPException
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
-from app.documents import DocumentNode, NodeType
+from app.documents import (
+    DocumentNode,
+    SUPPORTED_DOCUMENT_EXTENSIONS,
+    iter_document_nodes,
+)
 from app.models.document import Document
 from app.models.chunk import Chunk
 from app.rag.chunker import TextChunker
 from app.rag.embedder import Embedder
 from app.rag.vector_store import VectorStore
 from app.core.logger import logger
-
-
-WEB_PARSER_VERSION = "web_legacy_text_v1"
-
-
 class DocumentService:
 
     @staticmethod
@@ -36,7 +35,10 @@ class DocumentService:
             neo4j=None,  # Neo4j 连接，可选（没 Docker 时为 None）
     ) -> Document:
         # 1、校验文件类型
-        allowed_types = {"txt", "md", "pdf"}
+        allowed_types = {
+            extension.lstrip(".")
+            for extension in SUPPORTED_DOCUMENT_EXTENSIONS
+        }
         ext = file.filename.split(".")[-1].lower()
         if ext not in allowed_types:
             raise HTTPException(400, f"不支持的文件类型：{ext}")
@@ -133,32 +135,14 @@ class DocumentService:
         document_id: str,
         source_path: str,
     ) -> list[DocumentNode]:
-        """按现有提取行为生成统一文档节点。"""
-        if file_type == "pdf":
-            import fitz     #PyMuPDF
-            text = ""
-            with fitz.open(file_path) as doc:
-                for page in doc:
-                    text += page.get_text()
-        else:
-            async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
-                text = await f.read()
-        if not text.strip():
-            return []
-        return [
-            DocumentNode(
+        """通过统一解析器注册表生成文档节点。"""
+        return list(
+            iter_document_nodes(
+                file_path,
                 document_id=document_id,
-                content=text,
-                parser_version=WEB_PARSER_VERSION,
-                node_type=NodeType.TEXT,
-                sequence=0,
-                source_anchor={"source_path": source_path},
-                metadata={
-                    "filename": source_path,
-                    "file_type": file_type,
-                },
+                source_path=source_path,
             )
-        ]
+        )
 
     @staticmethod
     async def list_documents(db: AsyncSession, user_id: int) -> list[Document]:

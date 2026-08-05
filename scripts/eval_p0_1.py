@@ -10,9 +10,11 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 from time import perf_counter, sleep
 from typing import Any, Iterable, Union
@@ -24,7 +26,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app.lite.bm25_search import search_bm25_index
 from app.lite.generator import answer_query
-from app.lite.indexer import build_index
+from app.lite.indexer import IndexFormatError, build_index, ensure_index_format
 
 
 DEFAULT_MANIFEST = ROOT_DIR / "evals" / "p0_1_baseline_manifest.json"
@@ -131,6 +133,24 @@ def load_ready_extension_cases(path: PathLike):
     return ready, statuses
 
 
+def build_extension_corpus(documents_dir: PathLike, extension_cases, target: Path) -> Path:
+    """把冻结语料与扩展夹具复制到临时目录，用于扩展用例评分。"""
+    target = Path(target).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    source_root = Path(documents_dir).resolve()
+    for source in sorted(source_root.iterdir()):
+        if source.is_file():
+            shutil.copy2(source, target / source.name)
+    for case in extension_cases:
+        fixture = case.get("fixture")
+        if not fixture:
+            continue
+        fixture_path = resolve_root_path(fixture)
+        if fixture_path.is_file():
+            shutil.copy2(fixture_path, target / fixture_path.name)
+    return target
+
+
 def validate_frozen_inputs(manifest, dataset_path, documents_dir):
     dataset_path = Path(dataset_path).resolve()
     documents_dir = Path(documents_dir).resolve()
@@ -174,6 +194,11 @@ async def evaluate_async(
     extension_statuses=None,
 ):
     index_path = Path(index_dir).resolve()
+    if (index_path / "manifest.json").exists():
+        try:
+            ensure_index_format(index_path)
+        except IndexFormatError:
+            shutil.rmtree(index_path, ignore_errors=True)
     reset_bm25_cache(index_path)
     warmup_query = next(
         (
@@ -847,29 +872,44 @@ def main():
     frozen = validate_frozen_inputs(manifest, dataset_path, documents_dir)
     dataset = load_dataset(dataset_path)
     extension_statuses = {}
+    extension_corpus = None
+    corpus_cleanup = None
     if args.include_extensions:
         ready, extension_statuses = load_ready_extension_cases(
             resolve_root_path(manifest["extension_dataset"])
         )
         dataset.extend(ready)
+        if ready and any(case.get("fixture") for case in ready):
+            corpus_cleanup = tempfile.TemporaryDirectory(prefix="p0_1_ext_corpus_")
+            extension_corpus = build_extension_corpus(
+                documents_dir,
+                ready,
+                Path(corpus_cleanup.name) / "documents",
+            )
+            frozen["documents_sha256"] = sha256_directory(extension_corpus)
 
-    report = evaluate(
-        dataset,
-        documents_dir=documents_dir,
-        index_dir=args.index_dir,
-        baseline_id=str(manifest["baseline_id"]),
-        dataset_path=dataset_path,
-        dataset_hash=frozen["dataset_sha256"],
-        documents_hash=frozen["documents_sha256"],
-        top_k=args.top_k,
-        use_llm=args.use_llm,
-        llm_api_key=args.llm_api_key,
-        llm_base_url=args.llm_base_url,
-        llm_model=args.llm_model,
-        input_cost_per_million=args.input_cost_per_million,
-        output_cost_per_million=args.output_cost_per_million,
-        extension_statuses=extension_statuses,
-    )
+    index_corpus = extension_corpus or documents_dir
+    try:
+        report = evaluate(
+            dataset,
+            documents_dir=index_corpus,
+            index_dir=args.index_dir,
+            baseline_id=str(manifest["baseline_id"]),
+            dataset_path=dataset_path,
+            dataset_hash=frozen["dataset_sha256"],
+            documents_hash=frozen["documents_sha256"],
+            top_k=args.top_k,
+            use_llm=args.use_llm,
+            llm_api_key=args.llm_api_key,
+            llm_base_url=args.llm_base_url,
+            llm_model=args.llm_model,
+            input_cost_per_million=args.input_cost_per_million,
+            output_cost_per_million=args.output_cost_per_million,
+            extension_statuses=extension_statuses,
+        )
+    finally:
+        if corpus_cleanup is not None:
+            corpus_cleanup.cleanup()
 
     comparison = None
     if args.write_baseline:

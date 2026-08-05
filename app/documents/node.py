@@ -16,6 +16,7 @@ class NodeType(str, Enum):
     TEXT = "text"
     TABLE = "table"
     FIGURE = "figure"
+    WORKBOOK_SUMMARY = "workbook_summary"
     SHEET_SUMMARY = "sheet_summary"
     ROW_GROUP = "row_group"
 
