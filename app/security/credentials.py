@@ -64,9 +64,15 @@ if sys.platform == "win32":
     except (ImportError, OSError, AttributeError):  # pragma: no cover - 依赖探测
         _WINDOWS_AVAILABLE = False
 
+# 惰性探测：Windows 凭据管理器在部分环境（CI 服务会话、无交互登录、
+# 远程桌面锁定等）不可用，CredWriteW 会失败。首次使用探测一次，
+# 不可用时整个进程回退到本地混淆文件，避免应用崩溃。
+_WINDOWS_PROBED = False
+_WINDOWS_OK = False
+
 
 def get_backend_name() -> str:
-    if sys.platform == "win32" and _WINDOWS_AVAILABLE:
+    if sys.platform == "win32" and _WINDOWS_AVAILABLE and _windows_backend_usable():
         return "windows_credential_manager"
     if sys.platform == "darwin":
         return "macos_keychain"
@@ -95,7 +101,7 @@ def delete_secret(service: str, account: str) -> None:
 
 
 def _read_credential(service: str, account: str) -> str:
-    if sys.platform == "win32" and _WINDOWS_AVAILABLE:
+    if sys.platform == "win32" and _WINDOWS_AVAILABLE and _windows_backend_usable():
         return _windows_read(service, account)
     if sys.platform == "darwin":
         return _macos_read(service, account)
@@ -103,7 +109,7 @@ def _read_credential(service: str, account: str) -> str:
 
 
 def _write_credential(service: str, account: str, value: str) -> None:
-    if sys.platform == "win32" and _WINDOWS_AVAILABLE:
+    if sys.platform == "win32" and _WINDOWS_AVAILABLE and _windows_backend_usable():
         _windows_write(service, account, value)
     elif sys.platform == "darwin":
         _macos_write(service, account, value)
@@ -112,12 +118,26 @@ def _write_credential(service: str, account: str, value: str) -> None:
 
 
 def _delete_credential(service: str, account: str) -> None:
-    if sys.platform == "win32" and _WINDOWS_AVAILABLE:
+    if sys.platform == "win32" and _WINDOWS_AVAILABLE and _windows_backend_usable():
         _windows_delete(service, account)
     elif sys.platform == "darwin":
         _macos_delete(service, account)
     else:
         _fallback_delete(service, account)
+
+
+def _windows_backend_usable() -> bool:
+    global _WINDOWS_PROBED, _WINDOWS_OK
+    if _WINDOWS_PROBED:
+        return _WINDOWS_OK
+    _WINDOWS_PROBED = True
+    try:
+        _windows_write(DEFAULT_SERVICE, "__probe__", "probe")
+        _windows_delete(DEFAULT_SERVICE, "__probe__")
+        _WINDOWS_OK = True
+    except OSError:
+        _WINDOWS_OK = False
+    return _WINDOWS_OK
 
 
 # ---------- Windows Credential Manager ----------
