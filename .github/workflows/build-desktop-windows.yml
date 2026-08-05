@@ -46,12 +46,22 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          $log = & .\.venv-desktop\Scripts\python.exe -m unittest discover -s tests -v 2>&1
+          $log = @(& .\.venv-desktop\Scripts\python.exe -m unittest discover -s tests -v 2>&1)
           $code = $LASTEXITCODE
           $log | ForEach-Object { $_ }
-          foreach ($line in $log) {
+          for ($i = 0; $i -lt $log.Count; $i++) {
+            $line = [string]$log[$i]
             if ($line -match '^(FAIL|ERROR): ') {
               Write-Output "::error file=tests::$line"
+              $details = 0
+              for ($j = $i + 1; $j -lt $log.Count -and $details -lt 8; $j++) {
+                $next = [string]$log[$j]
+                if ($next -match '^-----') { break }
+                if ($next.Trim().Length -gt 0) {
+                  Write-Output "::error file=tests::    $($next.Trim())"
+                  $details++
+                }
+              }
             }
           }
           if ($code -ne 0) { exit $code }

@@ -1,0 +1,4 @@
+# 归一化换行符：被 SHA-256 校验的评估数据与演示文档必须稳定为 LF，
+# 否则 Windows (core.autocrlf=true) 检出为 CRLF 会导致哈希不一致。
+evals/** text eol=lf
+demo_documents/** text eol=lf
