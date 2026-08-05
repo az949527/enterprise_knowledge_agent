@@ -57,7 +57,7 @@ outputs/releases/LocalKnowledgeTool-macOS.zip
 3. 选择 **Build macOS Desktop**。
 4. 点击 **Run workflow**。
 
-`master` 分支推送和 `desktop-v*` 标签也会触发构建：
+`desktop-v*` 标签推送会自动触发构建（普通代码推送不再触发）：
 
 ```bash
 git tag desktop-v1.0.0
