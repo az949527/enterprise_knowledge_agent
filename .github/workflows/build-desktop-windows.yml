@@ -54,11 +54,11 @@ jobs:
             if ($line -match '^(FAIL|ERROR): ') {
               Write-Output "::error file=tests::$line"
               $details = 0
-              for ($j = $i + 1; $j -lt $log.Count -and $details -lt 8; $j++) {
+              for ($j = $i + 1; $j -lt $log.Count -and $details -lt 12; $j++) {
                 $next = [string]$log[$j]
-                if ($next -match '^-----') { break }
-                if ($next.Trim().Length -gt 0) {
-                  Write-Output "::error file=tests::    $($next.Trim())"
+                if ($next -match '^(=====|Ran [0-9]+|OK$|FAILED )') { break }
+                if ($next.Trim().Length -gt 0 -and $next -notmatch '^-----') {
+                  Write-Output "::error file=tests::  $($next.Trim())"
                   $details++
                 }
               }
