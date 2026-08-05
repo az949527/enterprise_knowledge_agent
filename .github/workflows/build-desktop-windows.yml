@@ -45,7 +45,16 @@ jobs:
         shell: pwsh
         env:
           QT_QPA_PLATFORM: offscreen
-        run: .\.venv-desktop\Scripts\python.exe -m unittest discover -s tests -v
+        run: |
+          $log = & .\.venv-desktop\Scripts\python.exe -m unittest discover -s tests -v 2>&1
+          $code = $LASTEXITCODE
+          $log | ForEach-Object { $_ }
+          foreach ($line in $log) {
+            if ($line -match '^(FAIL|ERROR): ') {
+              Write-Output "::error file=tests::$line"
+            }
+          }
+          if ($code -ne 0) { exit $code }
 
       - name: Build Windows application
         shell: pwsh
