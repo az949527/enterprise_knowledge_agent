@@ -223,12 +223,17 @@ class P07AcceptanceTests(unittest.TestCase):
             changed.write_text("new sharded content", encoding="utf-8")
             real_replace = indexer._replace_index_file
             commit_calls = 0
+            # build_index 内部将 index_dir resolve 后再拼接提交目标路径，
+            # 这里必须用相同的 resolve 结果比较，否则在部分 Windows 环境
+            # （如 GitHub Actions 的临时目录）路径表示不一致导致模拟中断不生效。
+            resolved_index_dir = index_dir.resolve()
 
             def hard_interrupt(source: Path, target: Path) -> None:
                 nonlocal commit_calls
                 is_top_commit = (
-                    target == index_dir / indexer.INDEX_MANIFEST_FILE
-                    or target.parent == index_dir / indexer.SHARDS_DIR
+                    target == resolved_index_dir / indexer.INDEX_MANIFEST_FILE
+                    or target.parent
+                    == resolved_index_dir / indexer.SHARDS_DIR
                 )
                 if is_top_commit:
                     commit_calls += 1
