@@ -31,11 +31,11 @@ from app.lite.bm25_search import search_bm25_index
 from app.lite.generator import answer_query
 from app.lite.indexer import build_index, DEFAULT_INDEX_DIR
 from app.lite.parent_context import ParentContextResolver
+from app.security.remote_access import set_remote_access
 from scripts.eval_p0_1 import (
     _score_case,
     compare_reports,
     load_dataset,
-    load_manifest,
     validate_frozen_inputs,
 )
 
@@ -102,6 +102,11 @@ async def _evaluate_case(
     return _score_case(item, sources, answer, 0.0)
 
 
+def _resolve_manifest_path(manifest_value: str) -> Path:
+    path = Path(str(manifest_value))
+    return path if path.is_absolute() else ROOT_DIR / path
+
+
 async def evaluate(
     manifest,
     *,
@@ -113,8 +118,8 @@ async def evaluate(
     max_parent_chars,
     max_total_chars,
 ):
-    dataset_path = ROOT_DIR / str(manifest["dataset"])
-    documents_dir = ROOT_DIR / str(manifest["documents_dir"])
+    dataset_path = _resolve_manifest_path(manifest["dataset"])
+    documents_dir = _resolve_manifest_path(manifest["documents_dir"])
     dataset = load_dataset(dataset_path)
     validate_frozen_inputs(manifest, dataset_path, documents_dir)
 
@@ -179,7 +184,7 @@ async def evaluate(
 
     # 与已提交基线做回退门禁：父扩展不得让未扩展路径比基线差。
     gate = None
-    baseline_path = ROOT_DIR / str(manifest.get("baseline_report") or "")
+    baseline_path = _resolve_manifest_path(manifest.get("baseline_report") or "")
     if baseline_path.exists():
         baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
         no_parent_report = {
@@ -231,15 +236,15 @@ def _git_commit() -> str:
         return ""
 
 
-def _write_reports(report):
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def _write_reports(report, output_dir: Path = OUTPUT_DIR):
+    output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    json_path = OUTPUT_DIR / f"p1_1_eval_{timestamp}.json"
+    json_path = output_dir / f"p1_1_eval_{timestamp}.json"
     json_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    md_path = OUTPUT_DIR / f"p1_1_eval_{timestamp}.md"
+    md_path = output_dir / f"p1_1_eval_{timestamp}.md"
     summary = report["summary"]
     rows = []
     for metric in ("recall_at_5", "mrr", "answer_coverage", "citation_accuracy"):
@@ -259,7 +264,7 @@ def _write_reports(report):
         "|---|---:|---:|---:|\n"
         + "\n".join(rows)
         + "\n\n质量回退门禁: "
-        + ("通过" if report.get("quality_gate_vs_baseline", {}).get("passed") else "未通过")
+        + ("通过" if (report.get("quality_gate_vs_baseline") or {}).get("passed") else "未通过")
         + "\n",
         encoding="utf-8",
     )
@@ -283,12 +288,27 @@ def _parse_args():
         type=int,
         default=settings.PARENT_CONTEXT_MAX_TOTAL_CHARS,
     )
+    parser.add_argument(
+        "--manifest",
+        default=str(ROOT_DIR / "evals" / "p0_1_baseline_manifest.json"),
+        help="评估清单 JSON 路径（默认 p0_1 冻结清单）",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=str(OUTPUT_DIR),
+        help="报告输出目录（默认 outputs/evals）",
+    )
     return parser.parse_args()
 
 
 def main():
     args = _parse_args()
-    manifest = load_manifest()
+    # 离线门禁默认开启，评估显式跑 LLM 时需放行远程调用。
+    if args.use_llm:
+        set_remote_access(True)
+    manifest = json.loads(
+        Path(args.manifest).read_text(encoding="utf-8")
+    )
     report = asyncio.run(
         evaluate(
             manifest,
@@ -301,7 +321,7 @@ def main():
             max_total_chars=args.max_total_chars,
         )
     )
-    json_path, md_path = _write_reports(report)
+    json_path, md_path = _write_reports(report, Path(args.output_dir))
     summary = report["summary"]
     print("no_parent  :", json.dumps(summary["no_parent"], ensure_ascii=False))
     print("parent     :", json.dumps(summary["parent_context"], ensure_ascii=False))
