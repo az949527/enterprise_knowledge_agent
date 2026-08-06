@@ -4,9 +4,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
 from app.lite.bm25_search import search_bm25_index
 from app.lite.generator import answer_query
 from app.lite.indexer import chunk_structure, list_index_documents, read_chunks
+from app.lite.parent_context import ParentContextResolver
 from app.lite.query_planner import QueryPlan, plan_query
 from app.lite.remote_retrieval import (
     DEFAULT_EMBEDDING_MODEL,
@@ -39,6 +41,7 @@ async def query_desktop_index(
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
     reranker_model: str = DEFAULT_RERANKER_MODEL,
     offline: bool = False,
+    use_parent_context: bool = settings.PARENT_CONTEXT_ENABLED,
 ) -> dict[str, Any]:
     # 完全离线模式：强制本地检索与本地答案，不发起任何远程请求。
     # 用户仍可获得基于本地索引的抽取式回答，而不是被拦截报错。
@@ -194,6 +197,15 @@ async def query_desktop_index(
                 "query_plan": query_plan.cache_parameters(),
             },
         }
+
+    # P1-1：内容类查询把命中的小块扩展到父章节/父表格，再送入生成。
+    # 放在缓存读写之后，缓存仍存精简 child，父上下文每次查询现算。
+    if use_parent_context and query_plan.requires_retrieval:
+        ParentContextResolver(
+            index_dir,
+            max_parent_chars=settings.PARENT_CONTEXT_MAX_PARENT_CHARS,
+            max_total_chars=settings.PARENT_CONTEXT_MAX_TOTAL_CHARS,
+        ).resolve(sources)
 
     answer = await answer_query(
         query,

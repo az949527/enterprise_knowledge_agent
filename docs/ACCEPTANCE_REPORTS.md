@@ -349,3 +349,47 @@ GraphRAG 或新的大型依赖。
   单文件更新 0.329 秒，诊断状态 `healthy`。
 - P0-6 20 万行 XLSX：4,002 个节点，RSS 增量约 27.08 MiB，
   未高于优化前验收结果。
+
+## P1-1 Parent-Child 自适应检索
+
+验收日期：2026-08-06
+
+结论：父上下文扩展已接线并达到当前阶段收口；冻结基线上开/关对照 delta=0
+（语料为短文档，chunks 与父内容相同触发去重），质量回退门禁通过。
+
+### 实际代码产出
+
+- 新增 `app/lite/parent_context.py`：分片感知、按需懒加载的
+  `ParentContextResolver`，给定检索命中的 sources（每条带 `document_id` +
+  `parent_id`），只读命中文档对应分片的 nodes/parents，附加父节点内容。
+  - 表格父节点用 `effective_display_content`（渲染后 Markdown）。
+  - 单父上限 `PARENT_CONTEXT_MAX_PARENT_CHARS` 与累计上限
+    `PARENT_CONTEXT_MAX_TOTAL_CHARS` 兜底。
+  - 命中块内容与父内容相同时去重，不重复送生成。
+  - 缺 parent_id / 缺文档 / 缺父记录时优雅降级。
+- `app/lite/desktop_query.py`：`query_desktop_index` 增加 `use_parent_context`
+  （默认读 settings），在 `answer_query` 前、缓存读写之后扩展来源；
+  缓存仍存精简 child，父上下文每次查询现算。仅 content 意图生效。
+- `app/lite/generator.py`：`build_context` 把父上下文与“命中的具体片段”
+  标记一起送入生成提示；child 的 `content`/`chunk_index` 不变，
+  引用回溯与抽取式回答不受影响。
+- `app/core/config.py`：新增 `PARENT_CONTEXT_ENABLED`、
+  `PARENT_CONTEXT_MAX_PARENT_CHARS`、`PARENT_CONTEXT_MAX_TOTAL_CHARS`。
+- 新增 `scripts/eval_p1_1.py`：冻结 30 条基线上开/关对照评估，
+  输出 JSON + Markdown 报告，并做与已提交基线的质量回退门禁。
+
+### 固定验收
+
+```powershell
+.\.venv-desktop\Scripts\python.exe -m unittest tests.test_parent_context -v
+.\.venv-desktop\Scripts\python.exe -m unittest discover -s tests
+.\.venv-desktop\Scripts\python.exe scripts\eval_p1_1.py
+```
+
+- P1-1 专项测试：10/10 通过（单文档文本父、表格父渲染、单父/累计截断、
+  自父去重、跨分片、缺父优雅降级、旧单体布局、CJK 截断、查询集成与上下文组装）。
+- 完整桌面测试：149/149 通过（含原有 139）。
+- 评估对照：no_parent 与 parent_context 在冻结基线上
+  recall/mrr/answer_coverage/citation_accuracy 均无差异（delta=0），
+  质量回退门禁通过（无回归）。
+- 有效报告为 `outputs/evals/p1_1_eval_*.json` 和对应 Markdown。

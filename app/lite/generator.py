@@ -107,7 +107,13 @@ async def answer_query(
 def build_context(sources: list[dict[str, Any]]) -> str:
     parts = []
     for index, source in enumerate(sources, 1):
-        parts.append(f"[{index}] {source.get('filename')} chunk {source.get('chunk_index')}\n{source.get('content', '')}")
+        header = f"[{index}] {source.get('filename')} chunk {source.get('chunk_index')}"
+        body = str(source.get("content", ""))
+        parent = source.get("parent_content")
+        if parent:
+            header += "（所属小节上下文；命中的片段已用标记标出）"
+            body = f"{parent}\n\n>> 命中的具体片段 <<\n{body}"
+        parts.append(f"{header}\n{body}")
     return "\n\n---\n\n".join(parts)
 
 

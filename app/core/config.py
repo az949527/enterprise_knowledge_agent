@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     RERANKER_USE_MODEL: bool = False  # 是否尝试加载 CrossEncoder 精排模型
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
     RERANKER_LOCAL_FILES_ONLY: bool = False  # 是否只从本地缓存加载 reranker 模型
+
+    # P1-1 Parent-Child 自适应检索：小块检索、父章节/父表格用于生成
+    PARENT_CONTEXT_ENABLED: bool = True  # 内容类查询默认扩展父上下文
+    PARENT_CONTEXT_MAX_PARENT_CHARS: int = 8000  # 单个父节点上下文上限
+    PARENT_CONTEXT_MAX_TOTAL_CHARS: int = 40000  # 全部父上下文累计上限
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # ==================== Neo4j 知识图谱配置 ====================
