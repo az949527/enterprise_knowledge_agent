@@ -5,12 +5,32 @@ from pathlib import PurePosixPath
 import re
 from typing import Any, Iterable
 
+from app.core.config import settings
+from app.lite.structured_query import (
+    AVG_MARKERS,
+    COUNT_MARKERS as COMPUTATION_COUNT_MARKERS,
+    CROSS_FILE_MARKERS,
+    FILTER_MARKERS,
+    MAX_MARKERS,
+    MIN_MARKERS,
+    SUM_MARKERS,
+)
+
 
 CONTENT_INTENT = "content"
 INVENTORY_COUNT_INTENT = "inventory_count"
 INVENTORY_LIST_INTENT = "inventory_list"
 DOCUMENT_SUMMARY_INTENT = "document_summary"
 MULTI_DOCUMENT_SUMMARY_INTENT = "multi_document_summary"
+STRUCTURED_COMPUTATION_INTENT = "structured_computation"
+
+_TABULAR_SUFFIXES = {".xlsx", ".csv"}
+# 强算子：明确的计算动词，出现即倾向于计算
+_STRONG_COMPUTATION_MARKERS = (
+    SUM_MARKERS + AVG_MARKERS + COMPUTATION_COUNT_MARKERS
+)
+# 弱算子：最高/最低也可能是文档里的措辞，需表范围限定
+_WEAK_COMPUTATION_MARKERS = MAX_MARKERS + MIN_MARKERS
 
 COUNT_MARKERS = ("几个", "多少个", "几份", "数量", "how many")
 LIST_MARKERS = ("有哪些文件", "有什么文件", "文件列表", "列出", "都有哪些")
@@ -52,6 +72,10 @@ class QueryPlan:
             DOCUMENT_SUMMARY_INTENT,
             MULTI_DOCUMENT_SUMMARY_INTENT,
         }
+
+    @property
+    def is_computation(self) -> bool:
+        return self.intent == STRUCTURED_COMPUTATION_INTENT
 
     @property
     def requires_retrieval(self) -> bool:
@@ -98,6 +122,32 @@ def plan_query(
                 _filter_documents(document_list, requested_types)
             ),
             file_types=tuple(sorted(requested_types)),
+        )
+    # P1-2 结构化计算：强算子只要有表格就计算；弱算子需表范围限定。
+    if (
+        settings.STRUCTURED_COMPUTATION_ENABLED
+        and _has_any_tabular(document_list)
+        and (
+            _is_strong_computation_query(normalized_query)
+            or (
+                _is_weak_computation_query(normalized_query)
+                and _has_table_scope(
+                    normalized_query, document_list, requested_types, matching_documents
+                )
+            )
+        )
+    ):
+        matching_tabular = [
+            document
+            for document in matching_documents
+            if _document_suffix(document) in _TABULAR_SUFFIXES
+        ]
+        return QueryPlan(
+            intent=STRUCTURED_COMPUTATION_INTENT,
+            source_paths=(
+                _document_sources(matching_tabular) if matching_tabular else ()
+            ),
+            file_types=tuple(sorted(requested_types & _TABULAR_SUFFIXES)),
         )
     if matching_documents:
         return QueryPlan(
@@ -234,3 +284,53 @@ def _normalize(value: str) -> str:
 
 def _compact(value: str) -> str:
     return re.sub(r"[\s._\-\\/：:（）()\[\]【】]+", "", value.casefold())
+
+
+def _has_any_tabular(document_list: list[dict[str, Any]]) -> bool:
+    return any(
+        _document_suffix(document) in _TABULAR_SUFFIXES
+        for document in document_list
+    )
+
+
+def _is_strong_computation_query(query: str) -> bool:
+    if any(marker in query for marker in _STRONG_COMPUTATION_MARKERS):
+        return True
+    if any(marker in query for marker in FILTER_MARKERS) and re.search(r"\d", query):
+        return True
+    return False
+
+
+def _is_weak_computation_query(query: str) -> bool:
+    return any(marker in query for marker in _WEAK_COMPUTATION_MARKERS)
+
+
+def _has_table_scope(
+    query: str,
+    document_list: list[dict[str, Any]],
+    requested_types: set[str],
+    matching_documents: list[dict[str, Any]],
+) -> bool:
+    tabular = [
+        document
+        for document in document_list
+        if _document_suffix(document) in _TABULAR_SUFFIXES
+    ]
+    if not tabular:
+        return False
+    non_tabular = [
+        document
+        for document in document_list
+        if _document_suffix(document) not in _TABULAR_SUFFIXES
+    ]
+    # 索引里只有表格文档：计算是唯一合理解读，直接放行。
+    if not non_tabular:
+        return True
+    if requested_types & _TABULAR_SUFFIXES:
+        return True
+    if any(
+        _document_suffix(document) in _TABULAR_SUFFIXES
+        for document in matching_documents
+    ):
+        return True
+    return any(marker in query for marker in TABLE_SCOPE_MARKERS)

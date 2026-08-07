@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     PARENT_CONTEXT_ENABLED: bool = True  # 内容类查询默认扩展父上下文
     PARENT_CONTEXT_MAX_PARENT_CHARS: int = 8000  # 单个父节点上下文上限
     PARENT_CONTEXT_MAX_TOTAL_CHARS: int = 40000  # 全部父上下文累计上限
+
+    # P1-2 Excel/CSV 结构化计算
+    STRUCTURED_COMPUTATION_ENABLED: bool = True  # 计算类查询走确定性计算
+    STRUCTURED_COMPUTATION_MAX_RESULT_ROWS: int = 20  # 结果最多返回行数
+    STRUCTURED_COMPUTATION_MAX_SHEET_ROWS: int = 100_000  # 单 Sheet 处理行数上限
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # ==================== Neo4j 知识图谱配置 ====================

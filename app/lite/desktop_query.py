@@ -9,6 +9,7 @@ from app.lite.bm25_search import search_bm25_index
 from app.lite.generator import answer_query
 from app.lite.indexer import chunk_structure, list_index_documents, read_chunks
 from app.lite.parent_context import ParentContextResolver
+from app.lite.structured_query import run_structured_computation
 from app.lite.query_planner import QueryPlan, plan_query
 from app.lite.remote_retrieval import (
     DEFAULT_EMBEDDING_MODEL,
@@ -86,6 +87,22 @@ async def query_desktop_index(
                 "query_plan": query_plan.cache_parameters(),
             },
         }
+    if query_plan.is_computation:
+        if _is_mixed_computation_query(query, documents):
+            return await _mixed_computation_result(
+                index_dir,
+                query_plan,
+                query,
+                offline=offline,
+                top_k=top_k,
+                use_llm=use_llm,
+                llm_api_key=llm_api_key,
+                llm_base_url=llm_base_url,
+                llm_model=llm_model,
+            )
+        return _structured_computation_result(
+            index_dir, query_plan, query, offline=offline
+        )
     remote_requested = use_llm or use_embedding or use_reranker
 
     candidate_k = (
@@ -305,6 +322,153 @@ def _inventory_result(
             "offline": False,
             "remote": False,
             "query_plan": query_plan.cache_parameters(),
+        },
+    }
+
+
+def _structured_computation_result(
+    index_dir: str | Path,
+    query_plan: QueryPlan,
+    query: str,
+    *,
+    offline: bool,
+) -> dict[str, Any]:
+    """P1-2 结构化计算：纯 Python 白名单计算，返回带行列证据的结果。"""
+    result = run_structured_computation(
+        query,
+        index_dir,
+        source_paths=query_plan.source_paths,
+    )
+    matched_rows = result.get("matched_rows") or []
+    cap = settings.STRUCTURED_COMPUTATION_MAX_RESULT_ROWS
+    sources = [
+        _row_to_source(row, rank)
+        for rank, row in enumerate(matched_rows[:cap], 1)
+    ]
+    return {
+        "answer": result["answer"],
+        "mode": result["mode"],
+        "sources": sources,
+        "retrieved_sources": sources,
+        "llm": {"enabled": False, "usage": None},
+        "retrieval": {
+            "embedding": False,
+            "reranker": False,
+            "cache_hit": False,
+            "offline": offline,
+            "remote": False,
+            "query_plan": query_plan.cache_parameters(),
+        },
+    }
+
+
+_MIXED_CONJUNCTIONS = ("和", "以及", "还有", "并且", "同时", "+")
+_MIXED_CONTENT_MARKERS = (
+    "怎么", "如何", "规定", "制度", "流程", "说明", "要求", "是什么", "情况",
+)
+_NON_TABULAR_SUFFIXES = (".md", ".pdf", ".txt")
+
+
+def _is_mixed_computation_query(
+    query: str,
+    documents: list[dict[str, Any]],
+) -> bool:
+    """计算 + 文档检索混合：有连接词+内容词，或点名了非表格文件。"""
+    normalized = str(query or "")
+    has_non_tabular = any(
+        str(document.get("filename") or "").lower().endswith(_NON_TABULAR_SUFFIXES)
+        for document in documents
+    )
+    if not has_non_tabular:
+        return False
+    joined = any(marker in normalized for marker in _MIXED_CONJUNCTIONS) and any(
+        marker in normalized for marker in _MIXED_CONTENT_MARKERS
+    )
+    names_doc = any(
+        str(document.get("filename") or "") in normalized
+        for document in documents
+        if str(document.get("filename") or "").lower().endswith(_NON_TABULAR_SUFFIXES)
+    )
+    return joined or names_doc
+
+
+async def _mixed_computation_result(
+    index_dir: str | Path,
+    query_plan: QueryPlan,
+    query: str,
+    *,
+    offline: bool,
+    top_k: int,
+    use_llm: bool,
+    llm_api_key: str,
+    llm_base_url: str,
+    llm_model: str,
+) -> dict[str, Any]:
+    """混合：表格部分走确定性计算，文档部分走 RAG，模板合并。"""
+    comp = run_structured_computation(
+        query,
+        index_dir,
+        source_paths=query_plan.source_paths,
+    )
+    cap = settings.STRUCTURED_COMPUTATION_MAX_RESULT_ROWS
+    comp_sources = [
+        _row_to_source(row, rank)
+        for rank, row in enumerate((comp.get("matched_rows") or [])[:cap], 1)
+    ]
+    doc_sources = search_bm25_index(query, index_dir, top_k=top_k)
+    doc_answer = await answer_query(
+        query,
+        doc_sources,
+        use_llm,
+        api_key=llm_api_key,
+        base_url=llm_base_url,
+        model=llm_model,
+    )
+    combined = (
+        f"【计算结果】{comp['answer']}\n\n"
+        f"【相关资料】{doc_answer['answer']}"
+    )
+    return {
+        "answer": combined,
+        "mode": "mixed",
+        "sources": comp_sources
+        + filter_sources_by_answer(
+            doc_answer["answer"],
+            doc_sources,
+            doc_answer["mode"],
+        ),
+        "retrieved_sources": comp_sources + doc_sources,
+        "llm": doc_answer.get("llm"),
+        "retrieval": {
+            "embedding": False,
+            "reranker": False,
+            "cache_hit": False,
+            "offline": offline,
+            "remote": bool(use_llm),
+            "query_plan": query_plan.cache_parameters(),
+        },
+    }
+
+
+def _row_to_source(row: dict[str, Any], rank: int) -> dict[str, Any]:
+    cells = row.get("cells") or {}
+    header = list(cells.keys())
+    line = "\t".join(str(cells.get(column) or "") for column in header)
+    content = line
+    if header:
+        content = "\t".join(header) + "\n" + line
+    return {
+        "rank": rank,
+        "filename": str(row.get("filename") or ""),
+        "source_path": str(row.get("source_path") or ""),
+        "chunk_index": 0,
+        "node_type": "row_group",
+        "content": content,
+        "row_numbers": [row.get("row_number")],
+        "source_anchor": {
+            "source_path": str(row.get("source_path") or ""),
+            "sheet": str(row.get("sheet") or ""),
+            "row_numbers": [row.get("row_number")],
         },
     }
 

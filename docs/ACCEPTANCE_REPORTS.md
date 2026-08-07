@@ -393,3 +393,47 @@ GraphRAG 或新的大型依赖。
   recall/mrr/answer_coverage/citation_accuracy 均无差异（delta=0），
   质量回退门禁通过（无回归）。
 - 有效报告为 `outputs/evals/p1_1_eval_*.json` 和对应 Markdown。
+
+## P1-2 Excel/CSV 结构化计算
+
+验收日期：2026-08-07
+
+结论：结构化计算首版完成 —— 识别 count/求和/平均/最大/最小/筛选问题，
+对 Sheet 的行做纯 Python 白名单计算，保留行列证据；跨文件聚合与混合文档
+（计算+检索）提供确定性首版；LLM 函数调用兜底为后续迭代（需远程 LLM）。
+
+### 实际代码产出
+
+- 新增 `app/lite/structured_query.py`：纯 Python 白名单计算引擎。
+  - 解析算子/目标列/比较条件/分组（`ComputationSpec`）。
+  - 行重建从 `nodes.jsonl` 读完整 row_group 网格（规避 `split_text` 硬切），
+    每行带 filename/sheet/row_number 证据。
+  - 列名必须命中白名单（`metadata.columns`）；字段/条件/Sheet 不明时澄清。
+  - 无 SQL、无 LLM 执行；枚举算子 + 白名单 + 只读 + 行列证据。
+- `app/lite/query_planner.py`：新增 `structured_computation` 意图。
+  强算子（求和/平均/计数/筛选+数字）有表格即计算；弱算子（最高/最低）
+  需表范围（表标记/点名/纯表格索引）。
+- `app/lite/desktop_query.py`：计算分支 + 跨文件聚合 + 混合文档。
+  - `_structured_computation_result`：返回计算结果 + 行证据。
+  - `_mixed_computation_result`：连接词+内容词触发，计算 + RAG 并行、模板合并。
+- `app/core/config.py`：`STRUCTURED_COMPUTATION_ENABLED` 及结果/Sheet 行数上限。
+
+### 固定验收
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest tests.test_structured_query -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+- P1-2 专项测试：15/15 通过（求和/平均/argmax/argmin/筛选/计数、
+  非数值列澄清、缺阈值澄清、跨文件合并、混合计算、长行节点网格重建、行证据）。
+- 完整测试：153/153 通过（3 项 PySide6 桌面用例在无桌面依赖环境下跳过）。
+- 冒烟：预算 xlsx 上"第四季度加起来"=235、"哪个部门第四季度最高"=研发部(140)、
+  "第一季度超过90的部门"=研发部、"有多少行"=2；跨文件双 Excel 合计=470。
+
+### 边界与后续
+
+- 执行层从"映射到受控 SQLite"改为纯 Python 白名单计算（零注入面，语义等价）。
+- 弱算子（最高/最低）在混合索引下需显式表范围，避免与文档措辞混淆。
+- 跨文件列名不一致、混合文档综合回答、LLM 函数调用兜底 → 后续迭代
+  （已在 DEVELOPMENT_PLAN.md P1-2 段记录设计与红线）。
