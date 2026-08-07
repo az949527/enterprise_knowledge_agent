@@ -100,8 +100,15 @@ async def query_desktop_index(
                 llm_base_url=llm_base_url,
                 llm_model=llm_model,
             )
-        return _structured_computation_result(
-            index_dir, query_plan, query, offline=offline
+        return await _structured_computation_result(
+            index_dir,
+            query_plan,
+            query,
+            offline=offline,
+            use_llm=use_llm,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
         )
     remote_requested = use_llm or use_embedding or use_reranker
 
@@ -326,19 +333,36 @@ def _inventory_result(
     }
 
 
-def _structured_computation_result(
+async def _structured_computation_result(
     index_dir: str | Path,
     query_plan: QueryPlan,
     query: str,
     *,
     offline: bool,
+    use_llm: bool,
+    llm_api_key: str,
+    llm_base_url: str,
+    llm_model: str,
 ) -> dict[str, Any]:
-    """P1-2 结构化计算：纯 Python 白名单计算，返回带行列证据的结果。"""
-    result = run_structured_computation(
-        query,
-        index_dir,
-        source_paths=query_plan.source_paths,
-    )
+    """P1-2 结构化计算：纯 Python 白名单计算；LLM 兜底消歧可选。"""
+    llm_available = bool(use_llm and llm_api_key)
+    if llm_available:
+        from app.lite.computation_llm import arun_computation_with_fallback
+
+        result = await arun_computation_with_fallback(
+            query,
+            index_dir,
+            source_paths=query_plan.source_paths,
+            llm_api_key=llm_api_key,
+            llm_base_url=llm_base_url,
+            llm_model=llm_model,
+        )
+    else:
+        result = run_structured_computation(
+            query,
+            index_dir,
+            source_paths=query_plan.source_paths,
+        )
     matched_rows = result.get("matched_rows") or []
     cap = settings.STRUCTURED_COMPUTATION_MAX_RESULT_ROWS
     sources = [
@@ -416,26 +440,47 @@ async def _mixed_computation_result(
         for rank, row in enumerate((comp.get("matched_rows") or [])[:cap], 1)
     ]
     doc_sources = search_bm25_index(query, index_dir, top_k=top_k)
-    doc_answer = await answer_query(
-        query,
-        doc_sources,
-        use_llm,
-        api_key=llm_api_key,
-        base_url=llm_base_url,
-        model=llm_model,
-    )
-    combined = (
-        f"【计算结果】{comp['answer']}\n\n"
-        f"【相关资料】{doc_answer['answer']}"
-    )
+    llm_available = bool(use_llm and llm_api_key)
+    if llm_available:
+        from app.lite.computation_llm import synthesize_mixed
+
+        combined = await synthesize_mixed(
+            query,
+            comp["answer"],
+            comp_sources,
+            doc_sources,
+            api_key=llm_api_key,
+            base_url=llm_base_url,
+            model=llm_model,
+        )
+        doc_answer = {
+            "answer": "",
+            "mode": "llm",
+            "llm": {"enabled": True, "usage": None},
+        }
+        if not combined:
+            combined = f"【计算结果】{comp['answer']}"
+    else:
+        doc_answer = await answer_query(
+            query,
+            doc_sources,
+            use_llm,
+            api_key=llm_api_key,
+            base_url=llm_base_url,
+            model=llm_model,
+        )
+        combined = (
+            f"【计算结果】{comp['answer']}\n\n"
+            f"【相关资料】{doc_answer['answer']}"
+        )
     return {
         "answer": combined,
         "mode": "mixed",
         "sources": comp_sources
         + filter_sources_by_answer(
-            doc_answer["answer"],
+            doc_answer.get("answer") or "",
             doc_sources,
-            doc_answer["mode"],
+            doc_answer.get("mode") or "",
         ),
         "retrieved_sources": comp_sources + doc_sources,
         "llm": doc_answer.get("llm"),

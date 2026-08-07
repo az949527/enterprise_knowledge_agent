@@ -69,15 +69,21 @@ def run_structured_computation(
     query: str,
     index_dir: str | Path,
     source_paths: Iterable[str] = (),
+    column_override: Optional[str] = None,
 ) -> dict[str, Any]:
-    """对外入口：读索引 → 解析 spec → 重建行 → 计算 → 返回结果。"""
+    """对外入口：读索引 → 解析 spec → 重建行 → 计算 → 返回结果。
+
+    column_override 供 LLM 兜底用：直接指定目标列（须在白名单内）。
+    """
     index_path = Path(index_dir).expanduser().resolve()
     chunks = read_chunks(index_path)
     nodes = {node.node_id: node for node in read_nodes(index_path)}
     source_paths = tuple(
         str(value) for value in source_paths if value
     )
-    spec = extract_computation_spec(query, chunks, nodes, source_paths)
+    spec = extract_computation_spec(
+        query, chunks, nodes, source_paths, column_override=column_override
+    )
     if spec.clarify:
         return {
             "answer": spec.clarify,
@@ -116,6 +122,7 @@ def extract_computation_spec(
     chunks: list[dict[str, Any]],
     nodes: dict[str, Any],
     source_paths: tuple[str, ...] = (),
+    column_override: Optional[str] = None,
 ) -> ComputationSpec:
     normalized = str(query or "").strip()
     if not normalized:
@@ -159,6 +166,8 @@ def extract_computation_spec(
 
     # 目标列：查询点名匹配；聚合类未点名时用唯一数值列。
     column = _match_column(normalized, whitelist)
+    if column_override and column_override in whitelist:
+        column = column_override
     if operator in ("sum", "avg", "max", "min") and not column:
         numeric = _numeric_columns(sheets, sheet_name, whitelist)
         if len(numeric) == 1:
@@ -169,16 +178,21 @@ def extract_computation_spec(
             )
         else:
             return _clarify(
-                "有多个数值列，请指定对哪一列计算。可用列：" + _join_cols(numeric)
+                "有多个数值列，请指定对哪一列计算。可用列：" + _join_cols(numeric),
+                columns=numeric,
             )
     if operator in ("filter", "count") and not column and operator == "filter":
         return _clarify(
-            "筛选条件不明确，请说明按哪一列、什么条件筛选。可用列：" + _join_cols(whitelist)
+            "筛选条件不明确，请说明按哪一列、什么条件筛选。可用列：" + _join_cols(whitelist),
+            columns=whitelist,
         )
 
     comparison, threshold = _parse_condition(normalized)
     if operator == "filter" and not comparison:
-        return _clarify("筛选需要明确的比较条件（如：超过 100）。")
+        return _clarify(
+            "筛选需要明确的比较条件（如：超过 100）。可用列：" + _join_cols(whitelist),
+            columns=whitelist,
+        )
 
     # 分组/argmax：group 列 = 白名单里出现在查询中且 ≠ 目标列的列。
     group = _parse_group(normalized, whitelist, column)
@@ -536,5 +550,8 @@ def replace(spec: ComputationSpec, **kwargs: Any) -> ComputationSpec:
     )
 
 
-def _clarify(message: str) -> ComputationSpec:
-    return ComputationSpec(clarify=message)
+def _clarify(
+    message: str,
+    columns: Iterable[str] = (),
+) -> ComputationSpec:
+    return ComputationSpec(clarify=message, columns=tuple(columns))

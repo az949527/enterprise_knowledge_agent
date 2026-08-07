@@ -6,12 +6,19 @@ import shutil
 import tempfile
 import unittest
 
+from unittest.mock import AsyncMock, patch
+
+from app.lite.computation_llm import (
+    arun_computation_with_fallback,
+    synthesize_mixed,
+)
 from app.lite.desktop_query import query_desktop_index
 from app.lite.indexer import build_index, write_node_index
 from app.lite.structured_query import (
     extract_computation_spec,
     run_structured_computation,
 )
+from app.security.remote_access import set_remote_access
 
 FIXTURE = (
     Path(__file__).resolve().parents[1]
@@ -176,6 +183,81 @@ class MixedComputationTests(unittest.TestCase):
         build_index(source_dir, index_dir)
         result = asyncio.run(_query(index_dir, "第四季度加起来是多少"))
         self.assertEqual(result["mode"], "structured")
+
+
+class ComputationFallbackTests(unittest.TestCase):
+    def setUp(self) -> None:
+        set_remote_access(True)
+
+    def tearDown(self) -> None:
+        set_remote_access(False)
+
+    def test_no_key_fallback_not_triggered(self) -> None:
+        index_dir = _index_from_fixture(["budget.xlsx"])
+        result = asyncio.run(
+            arun_computation_with_fallback(
+                "部门加起来是多少", index_dir, llm_api_key=""
+            )
+        )
+        self.assertEqual(result["mode"], "structured_clarify")
+
+    @patch(
+        "app.lite.computation_llm.resolve_column",
+        new_callable=AsyncMock,
+        return_value="第四季度",
+    )
+    def test_llm_resolves_ambiguous_column(self, mock_resolve) -> None:
+        index_dir = _index_from_fixture(["budget.xlsx"])
+        result = asyncio.run(
+            arun_computation_with_fallback(
+                "加起来是多少",
+                index_dir,
+                llm_api_key="sk-test",
+                llm_base_url="https://example.test",
+                llm_model="model-test",
+            )
+        )
+        self.assertEqual(result["mode"], "structured")
+        self.assertIn("235", result["answer"])
+        mock_resolve.assert_awaited_once()
+
+    @patch(
+        "app.lite.computation_llm.resolve_column",
+        new_callable=AsyncMock,
+        return_value=None,
+    )
+    def test_llm_unable_to_resolve_keeps_clarify(self, mock_resolve) -> None:
+        index_dir = _index_from_fixture(["budget.xlsx"])
+        result = asyncio.run(
+            arun_computation_with_fallback(
+                "加起来是多少",
+                index_dir,
+                llm_api_key="sk-test",
+                llm_base_url="https://example.test",
+                llm_model="model-test",
+            )
+        )
+        self.assertEqual(result["mode"], "structured_clarify")
+
+    @patch(
+        "app.lite.computation_llm._llm_call",
+        new_callable=AsyncMock,
+        return_value="综合答案",
+    )
+    def test_synthesize_mixed_uses_llm(self, mock_call) -> None:
+        text = asyncio.run(
+            synthesize_mixed(
+                "预算总和和报销规定",
+                "合计 = 235",
+                [{"filename": "budget.xlsx", "row_numbers": [2], "content": "a"}],
+                [{"filename": "policy.md", "chunk_index": 0, "content": "三十天内"}],
+                api_key="sk-test",
+                base_url="https://example.test",
+                model="model-test",
+            )
+        )
+        self.assertEqual(text, "综合答案")
+        mock_call.assert_awaited_once()
 
 
 class ChunkSplitReassemblyTests(unittest.TestCase):
