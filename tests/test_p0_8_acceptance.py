@@ -456,11 +456,21 @@ class DesktopPrivacyTests(unittest.TestCase):
         from app.desktop import main as desktop_main
 
         MemorySettings.values = dict(memory_values)
+        # MainWindow 构造会初始化聊天 DB、加载会话、统计磁盘，在 offscreen/
+        # 打包环境可能卡住；本测试只验证隐私/离线逻辑，将这些慢路径 patch 掉。
         with patch.object(desktop_main, "QSettings", MemorySettings), patch.object(
             desktop_main, "get_secret", return_value=""
         ), patch.object(desktop_main, "set_secret"), patch.object(
             desktop_main, "set_remote_access"
-        ), patch.object(desktop_main, "cleanup_stale_temp_files"):
+        ), patch.object(desktop_main, "cleanup_stale_temp_files"), patch.object(
+            desktop_main.MainWindow, "_ensure_chat_db", return_value=None
+        ), patch.object(
+            desktop_main.MainWindow, "start_disk_stats", return_value=None
+        ), patch.object(
+            desktop_main.MainWindow, "_load_conversations", return_value=None
+        ), patch.object(
+            desktop_main.MainWindow, "_cleanup_old_data", return_value=None
+        ):
             return desktop_main.MainWindow()
 
     def _close_window(self, window) -> None:
@@ -505,7 +515,8 @@ class DesktopPrivacyTests(unittest.TestCase):
                 window.query_input.setPlainText("测试问题")
                 window.ask_question()
             query_worker.assert_not_called()
-            self.assertTrue(window.network_status_label.isHidden())
+            # P1-4 后网络状态是持久状态行；取消 consent 时保持初始"模式：—"。
+            self.assertEqual(window.network_status_label.text(), "模式：—")
         finally:
             self._close_window(window)
 
@@ -640,7 +651,15 @@ class DesktopPrivacyTests(unittest.TestCase):
             desktop_main, "set_secret", side_effect=capture
         ), patch.object(desktop_main, "get_secret", return_value=""), patch.object(
             desktop_main, "set_remote_access"
-        ), patch.object(desktop_main, "cleanup_stale_temp_files"):
+        ), patch.object(desktop_main, "cleanup_stale_temp_files"), patch.object(
+            desktop_main.MainWindow, "_ensure_chat_db", return_value=None
+        ), patch.object(
+            desktop_main.MainWindow, "start_disk_stats", return_value=None
+        ), patch.object(
+            desktop_main.MainWindow, "_load_conversations", return_value=None
+        ), patch.object(
+            desktop_main.MainWindow, "_cleanup_old_data", return_value=None
+        ):
             window = desktop_main.MainWindow()
             self.assertEqual(recorded.get("llm_api_key"), "legacy-llm-key")
             self.assertEqual(recorded.get("retrieval_api_key"), "legacy-retrieval-key")

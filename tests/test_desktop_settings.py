@@ -50,7 +50,30 @@ class DesktopSettingsTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
 
+    def setUp(self) -> None:
+        # MainWindow 构造会初始化聊天 DB、加载会话、统计磁盘等慢操作，
+        # 在 offscreen / 打包环境可能每次数秒甚至卡住。本测试只验证设置逻辑，
+        # 因此将这些与设置无关的慢路径 patch 掉。
+        self._window_patches = [
+            patch.object(
+                desktop_main.MainWindow, "_ensure_chat_db", return_value=None
+            ),
+            patch.object(
+                desktop_main.MainWindow, "start_disk_stats", return_value=None
+            ),
+            patch.object(
+                desktop_main.MainWindow, "_load_conversations", return_value=None
+            ),
+            patch.object(
+                desktop_main.MainWindow, "_cleanup_old_data", return_value=None
+            ),
+        ]
+        for _patch in self._window_patches:
+            _patch.start()
+
     def tearDown(self) -> None:
+        for _patch in self._window_patches:
+            _patch.stop()
         # MainWindow 会按离线设置更新模块级远程门禁，测试后恢复在线。
         set_remote_access(True)
 
