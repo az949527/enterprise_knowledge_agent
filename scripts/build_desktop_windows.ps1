@@ -45,6 +45,7 @@ if (Test-Path -LiteralPath $ZipPath) {
 New-Item -ItemType Directory -Force -Path $ReleaseRoot, $WindowsDist, $BuildRoot, $SpecRoot | Out-Null
 
 Write-Host "Building Windows desktop release..."
+$BuildLog = Join-Path $Root "outputs\build\windows\pyinstaller.log"
 & $VenvPython -m PyInstaller `
   --noconfirm `
   --clean `
@@ -57,7 +58,15 @@ Write-Host "Building Windows desktop release..."
   --paths $Root `
   --hidden-import aiosqlite `
   --hidden-import sqlalchemy.dialects.sqlite.aiosqlite `
-  scripts\run_desktop.py
+  scripts\run_desktop.py 2>&1 | Tee-Object -FilePath $BuildLog
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "PyInstaller failed (exit code $LASTEXITCODE). Last log lines:"
+    if (Test-Path -LiteralPath $BuildLog) {
+        Get-Content -LiteralPath $BuildLog -Tail 60
+    }
+    throw "PyInstaller build failed with exit code $LASTEXITCODE."
+}
 
 $AppDir = Join-Path $WindowsDist "LocalKnowledgeTool"
 & $VenvPython scripts\verify_desktop_release.py $AppDir
