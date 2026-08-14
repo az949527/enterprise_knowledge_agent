@@ -744,6 +744,18 @@ def write_node_index(
                 stats["node_count"] += 1
                 stats["_parser_versions"].add(node.parser_version)
                 stats["_node_types"].add(node.node_type.value)
+                # 元数据契约：任意节点携带的 document 级统计都收集（不只在首节点）。
+                node_doc_stats = (node.metadata or {}).get(
+                    "document_statistics"
+                ) or {}
+                if node_doc_stats.get("page_count") is not None:
+                    stats["page_count"] = _as_optional_int(
+                        node_doc_stats.get("page_count")
+                    )
+                if (node.metadata or {}).get("sheet_count") is not None:
+                    stats["sheet_count"] = _as_optional_int(
+                        (node.metadata or {}).get("sheet_count")
+                    )
                 parser_versions.add(node.parser_version)
                 node_types.add(node.node_type.value)
                 node_writer.write(
@@ -1448,6 +1460,8 @@ def _source_record_for_path(
         SOURCE_SHA256_FIELD: digest.hexdigest(),
         SOURCE_SIZE_FIELD: int(stat.st_size),
         SOURCE_MTIME_NS_FIELD: int(stat.st_mtime_ns),
+        # 原文件绝对路径（仅本地 manifest，不进远程文本）
+        "origin_path": str(path.resolve()),
     }
 
 
@@ -1472,6 +1486,8 @@ def _document_source_records(
         ):
             if document.get(field_name) is not None:
                 record[field_name] = document[field_name]
+        if document.get("origin_path"):
+            record["origin_path"] = str(document["origin_path"])
         records[source_path.casefold()] = record
     return records
 
@@ -1830,6 +1846,8 @@ def _new_document_stats(
     source_path: str,
     source_record: Mapping[str, Any] | None = None,
 ) -> dict:
+    # 元数据契约：解析器在第一个节点透传 document 级统计。
+    doc_statistics = (node.metadata or {}).get("document_statistics") or {}
     stats = {
         "document_id": node.document_id,
         "filename": PurePosixPath(source_path).name,
@@ -1837,6 +1855,13 @@ def _new_document_stats(
         "node_count": 0,
         "chunk_count": 0,
         "content_chars": 0,
+        "page_count": _as_optional_int(doc_statistics.get("page_count")),
+        # XLSX workbook_summary 的 metadata.sheet_count 已由解析器写入
+        "sheet_count": _as_optional_int(
+            (node.metadata or {}).get("sheet_count")
+            or doc_statistics.get("sheet_count")
+        ),
+        "origin_path": str((source_record or {}).get("origin_path") or ""),
         "_parser_versions": set(),
         "_node_types": set(),
     }
@@ -1848,6 +1873,15 @@ def _new_document_stats(
         if source_record and source_record.get(field_name) is not None:
             stats[field_name] = source_record[field_name]
     return stats
+
+
+def _as_optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _serialize_document_stats(values: Iterable[dict]) -> list[dict]:

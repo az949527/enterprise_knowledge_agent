@@ -301,7 +301,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate retrieval quality against a JSON dataset.")
-    parser.add_argument("--dataset", default="evals/eval_dataset.json")
+    parser.add_argument("--dataset", default="", help="评估数据集 JSON 路径（必填）")
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--candidate-k", type=int, default=10)
     parser.add_argument("--limit", type=int)

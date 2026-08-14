@@ -12,4 +12,9 @@ from app.desktop.main import run_desktop
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_desktop(smoke_test="--smoke-test" in sys.argv))
+    raise SystemExit(
+        run_desktop(
+            smoke_test="--smoke-test" in sys.argv,
+            ui_test="--ui-test" in sys.argv,
+        )
+    )

@@ -5,81 +5,81 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>本地知识库轻量工具</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/static/styles.css?v=20260721-knowledge-manage" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260810-p13-chat" />
   </head>
   <body>
-    <main class="shell">
-      <header class="header">
-        <div>
-          <h1>本地知识库轻量工具</h1>
-          <p>本地目录索引与轻量问答</p>
+    <div class="app-shell" id="appShell">
+      <!-- 侧边栏 -->
+      <aside class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+          <h1>知识库问答</h1>
+          <input id="convSearch" type="text" placeholder="搜索对话…" />
+          <button id="newConvBtn">+ 新对话</button>
         </div>
-        <span id="status">就绪</span>
-      </header>
+        <div class="conversation-list" id="convList">
+          <div class="messages-empty" style="font-size:13px">加载中…</div>
+        </div>
+      </aside>
 
-      <section class="panel">
-        <h2>LLM 设置</h2>
-        <div class="settings-grid">
-          <label>
-            API Key
-            <input id="apiKeyInput" type="password" placeholder="填写你的 LLM API Key" autocomplete="off" />
+      <!-- 主区域 -->
+      <div class="main-area">
+        <!-- 工具栏 -->
+        <div class="toolbar">
+          <h2 id="convTitle">新对话</h2>
+          <button id="settingsBtn" title="LLM 设置">设置</button>
+          <button id="docsBtn" title="管理文档">文档</button>
+          <span id="status"></span>
+        </div>
+
+        <!-- 设置面板（可折叠） -->
+        <div class="settings-panel" id="settingsPanel">
+          <label>API Key
+            <input id="apiKeyInput" type="password" placeholder="LLM API Key" autocomplete="off" />
           </label>
-          <label>
-            Base URL
+          <label>Base URL
             <input id="baseUrlInput" type="url" placeholder="https://api.deepseek.com" />
           </label>
-          <label>
-            Model
-            <input id="modelInput" type="text" placeholder="deepseek-v4-flash" />
+          <label>Model
+            <input id="modelInput" type="text" list="modelOptions" placeholder="deepseek-v4-flash" />
+            <datalist id="modelOptions">
+              <option value="deepseek-v4-pro"></option>
+              <option value="deepseek-v4-flash"></option>
+            </datalist>
           </label>
         </div>
-        <div class="meta">API Key 只保存在当前浏览器本地，查询时发送给本机服务使用。</div>
-      </section>
 
-      <section class="panel">
-        <h2>添加知识文档</h2>
-        <div class="pickers">
-          <label class="file-button">
-            选择文件
-            <input id="filePicker" type="file" multiple accept=".txt,.md,.pdf,.csv,.xlsx" />
-          </label>
-          <label class="file-button">
-            选择文件夹
-            <input id="folderPicker" type="file" multiple webkitdirectory />
-          </label>
+        <!-- 文档面板（可折叠） -->
+        <div class="documents-panel" id="documentsPanel">
+          <div class="doc-picker-row">
+            <label class="file-button">选择文件
+              <input id="filePicker" type="file" multiple accept=".txt,.md,.pdf,.csv,.xlsx" />
+            </label>
+            <label class="file-button">选择文件夹
+              <input id="folderPicker" type="file" multiple webkitdirectory />
+            </label>
+            <span class="meta" id="selectedFiles" style="font-size:12px">选择文档后自动构建索引</span>
+          </div>
+          <div class="documents-list" id="documentsList"></div>
         </div>
-        <div id="selectedFiles" class="meta">尚未选择文档。可选择 `.txt`、`.md`、`.pdf`、`.csv`、`.xlsx` 文件或文件夹。</div>
-        <div id="indexResult" class="meta">选择文档后会自动构建索引，完成后即可提问。Lite 版只查询当前添加的文档。</div>
-      </section>
 
-      <section class="panel">
-        <h2>已添加文档</h2>
-        <div id="documentsList" class="documents-list"></div>
-      </section>
-
-      <section class="panel">
-        <h2>提问</h2>
-        <textarea id="queryInput" rows="4" placeholder="输入一个和本地文档相关的问题"></textarea>
-        <div class="query-actions">
-          <label class="checkbox">
-            <input id="useLlm" type="checkbox" checked />
-            使用 LLM 汇总答案
-          </label>
-          <button id="queryBtn" type="button">查询</button>
+        <!-- 消息区域 -->
+        <div class="messages-area" id="messagesArea">
+          <div class="messages-empty">选择或创建对话开始提问</div>
         </div>
-      </section>
 
-      <section class="panel">
-        <h2>答案</h2>
-        <pre id="answerBox">尚未查询。</pre>
-      </section>
+        <!-- 输入栏 -->
+        <div class="input-bar">
+          <div class="input-row">
+            <textarea id="queryInput" rows="2" placeholder="输入问题… (Enter 发送)" disabled></textarea>
+            <label class="checkbox">
+              <input id="useLlm" type="checkbox" checked />LLM
+            </label>
+            <button id="sendBtn" disabled>发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
 
-      <section class="panel">
-        <h2>引用来源</h2>
-        <div id="sourcesList" class="sources"></div>
-      </section>
-    </main>
-
-    <script src="/static/app.js?v=20260721-source-meta-fix"></script>
+    <script src="/static/app.js?v=20260810-p13-chat"></script>
   </body>
 </html>

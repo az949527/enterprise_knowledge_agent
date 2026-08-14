@@ -10,7 +10,8 @@ if [[ "$PYTHON_VERSION" != "3.11" ]]; then
   exit 1
 fi
 
-"$PYTHON_BIN" -m pip install -r requirements-lite.txt
+DEPS="$("$PYTHON_BIN" scripts/requirements_sections.py server build)"
+"$PYTHON_BIN" -m pip install $DEPS
 
 "$PYTHON_BIN" -m PyInstaller \
   --name LocalKnowledgeTool \

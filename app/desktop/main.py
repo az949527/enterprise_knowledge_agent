@@ -5,13 +5,23 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
-from PySide6.QtCore import QSettings, QStandardPaths, Qt, QThread, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QSettings, QStandardPaths, Qt, QThread, QUrl, Signal
+from PySide6.QtGui import (
+    QColor,
+    QCloseEvent,
+    QDesktopServices,
+    QImage,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -20,6 +30,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -37,6 +48,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.lite.desktop_query import query_desktop_index
+from app.lite.followup_rewriter import rewrite_followup
 from app.lite.indexer import (
     IndexCancelledError,
     IndexFormatError,
@@ -53,6 +65,23 @@ from app.lite.remote_retrieval import (
     DEFAULT_RETRIEVAL_BASE_URL,
     set_remote_access,
 )
+from app.core.config import DEFAULT_LLM_MODEL, normalize_llm_model, settings
+
+# 确保数据库路径稳定可用：打包 EXE 不依赖当前工作目录。
+# engine 在 import database 时创建，必须在下面 import 之前设置 DATABASE_URL。
+if getattr(sys, "frozen", False):
+    _app_data = QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+    _db_dir = Path(_app_data).resolve() / "data"
+    _db_dir.mkdir(parents=True, exist_ok=True)
+    settings.DATABASE_URL = (
+        "sqlite+aiosqlite:///"
+        + (_db_dir / "enterprise_knowledge_agent.db").as_posix()
+    )
+else:
+    Path("data").mkdir(parents=True, exist_ok=True)
+
+from app.core.database import async_session_factory, init_db
+from app.services.conversation_service import ConversationService
 from app.security import (
     DEFAULT_SERVICE,
     get_backend_name,
@@ -198,6 +227,11 @@ class DiagnosticWorker(QThread):
 
 
 class QueryWorker(QThread):
+    """在后台线程完成整条查询链路，避免阻塞 UI 线程。
+
+    覆盖：会话准备(创建/选择) → 读取历史 → 追问改写(可能远程)
+        → 保存用户消息 → 检索/生成 → 保存助手消息 → 自动摘要。
+    """
     completed = Signal(dict)
     failed = Signal(str)
 
@@ -205,6 +239,8 @@ class QueryWorker(QThread):
         self,
         query: str,
         index_dir: Path,
+        *,
+        conv_id: str | None,
         use_llm: bool,
         llm_api_key: str,
         llm_base_url: str,
@@ -220,6 +256,7 @@ class QueryWorker(QThread):
         super().__init__()
         self.query = query
         self.index_dir = index_dir
+        self.conv_id = conv_id
         self.use_llm = use_llm
         self.llm_api_key = llm_api_key
         self.llm_base_url = llm_base_url
@@ -233,28 +270,550 @@ class QueryWorker(QThread):
         self.offline = offline
 
     def run(self) -> None:
+        self._resolved_conv_id = self.conv_id
         try:
-            result = asyncio.run(
-                query_desktop_index(
-                    self.query,
-                    self.index_dir,
-                    top_k=5,
-                    use_llm=self.use_llm,
-                    llm_api_key=self.llm_api_key,
-                    llm_base_url=self.llm_base_url,
-                    llm_model=self.llm_model,
-                    use_embedding=self.use_embedding,
-                    use_reranker=self.use_reranker,
-                    retrieval_api_key=self.retrieval_api_key,
-                    retrieval_base_url=self.retrieval_base_url,
-                    embedding_model=self.embedding_model,
-                    reranker_model=self.reranker_model,
-                    offline=self.offline,
-                )
-            )
+            result = asyncio.run(self._run())
             self.completed.emit(result)
         except Exception as exc:
+            # 后台保存错误消息（UI 线程不阻塞），便于用户回溯
+            try:
+                asyncio.run(
+                    _save_error_message(self._resolved_conv_id, str(exc))
+                )
+            except Exception:
+                pass
             self.failed.emit(str(exc))
+
+    async def _run(self) -> dict:
+        # 1. 会话准备：无会话则自动创建
+        conv_id = self.conv_id
+        async with async_session_factory() as db:
+            if not conv_id:
+                conv = await ConversationService.create_conversation(db)
+                await db.commit()
+                conv_id = conv.id
+            self._resolved_conv_id = conv_id
+            recent_msgs = await ConversationService.get_messages(
+                db, conv_id, limit=10
+            )
+        history = []
+        for message in recent_msgs[-6:]:
+            if message.role == "user" and message.original_query:
+                history.append({"role": "user", "content": message.original_query})
+            elif message.role == "assistant" and message.answer:
+                history.append({"role": "assistant", "content": message.answer})
+
+        # 2. 追问改写（可能发起远程请求，放在后台线程）
+        rewritten_query = self.query
+        if history:
+            try:
+                rewritten_query = await rewrite_followup(
+                    self.query,
+                    history,
+                    api_key=self.llm_api_key,
+                    base_url=self.llm_base_url,
+                    model=self.llm_model,
+                )
+            except Exception:
+                rewritten_query = self.query
+
+        # 3. 保存用户消息
+        async with async_session_factory() as db:
+            await ConversationService.add_message(
+                db,
+                conv_id,
+                role="user",
+                original_query=self.query,
+                rewritten_query=(
+                    rewritten_query if rewritten_query != self.query else None
+                ),
+            )
+            await db.commit()
+
+        # 4. 检索与生成
+        result = await query_desktop_index(
+            rewritten_query,
+            self.index_dir,
+            top_k=5,
+            use_llm=self.use_llm,
+            llm_api_key=self.llm_api_key,
+            llm_base_url=self.llm_base_url,
+            llm_model=self.llm_model,
+            use_embedding=self.use_embedding,
+            use_reranker=self.use_reranker,
+            retrieval_api_key=self.retrieval_api_key,
+            retrieval_base_url=self.retrieval_base_url,
+            embedding_model=self.embedding_model,
+            reranker_model=self.reranker_model,
+            offline=self.offline,
+            conversation_history=history or None,
+        )
+
+        # 5. 保存助手消息
+        llm_info = result.get("llm") or {}
+        mode = str(result.get("mode") or "")
+        async with async_session_factory() as db:
+            await ConversationService.add_message(
+                db,
+                conv_id,
+                role="assistant",
+                answer=str(result.get("answer") or ""),
+                citations=result.get("sources") or [],
+                model=llm_info.get("model") or llm_info.get("configured_model") or "",
+                token_usage=llm_info.get("usage"),
+                error=llm_info.get("error") if mode == "llm_error" else None,
+            )
+            await db.commit()
+
+        # 6. 自动摘要（后台）
+        try:
+            await _maybe_summarize_conversation(
+                conv_id,
+                api_key=self.llm_api_key,
+                base_url=self.llm_base_url,
+                model=self.llm_model,
+                offline=self.offline,
+            )
+        except Exception:
+            pass
+
+        result["conv_id"] = conv_id
+        result["original_query"] = self.query
+        result["rewritten_query"] = (
+            rewritten_query if rewritten_query != self.query else ""
+        )
+        return result
+
+
+def _desktop_db_path() -> Path | None:
+    """从 settings.DATABASE_URL 解析本地 SQLite 文件路径。"""
+    url = str(settings.DATABASE_URL or "")
+    if not url.startswith("sqlite"):
+        return None
+    for prefix in ("sqlite+aiosqlite:///", "sqlite:///", "sqlite://"):
+        if url.startswith(prefix):
+            raw = url[len(prefix):]
+            if raw:
+                return Path(raw).expanduser().resolve()
+    return None
+
+
+def _human_size(num_bytes: int) -> str:
+    value = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} GB"
+
+
+def _dir_size(path: Path) -> int:
+    """递归统计目录/文件字节数，不跟随符号链接，忽略权限错误。"""
+    total = 0
+    try:
+        if path.is_file():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                return 0
+        elif path.is_dir():
+            for item in path.rglob("*"):
+                if item.is_file():
+                    try:
+                        total += item.stat().st_size
+                    except OSError:
+                        continue
+    except OSError:
+        return 0
+    return total
+
+
+class DiskStatsWorker(QThread):
+    """后台统计索引与聊天数据库占用，避免阻塞 UI。"""
+    completed = Signal(dict)
+
+    def __init__(self, index_dir: Path, db_path: Path | None) -> None:
+        super().__init__()
+        self.index_dir = index_dir
+        self.db_path = db_path
+
+    def run(self) -> None:
+        index_bytes = _dir_size(self.index_dir)
+        db_bytes = 0
+        if self.db_path is not None:
+            for candidate in (self.db_path,):
+                db_bytes += _dir_size(candidate)
+            for suffix in ("-wal", "-shm", "-journal"):
+                sidecar = self.db_path.with_name(self.db_path.name + suffix)
+                db_bytes += _dir_size(sidecar)
+        self.completed.emit({"index_bytes": index_bytes, "db_bytes": db_bytes})
+
+
+class _PdfPageWorker(QThread):
+    """后台渲染 PDF 指定页并叠加引用高亮框。"""
+    loaded = Signal(object, int, int)  # QImage, page_number(1-based), page_count
+    failed = Signal(str)
+
+    def __init__(self, origin_path: Path, page_number: int, zoom: float,
+                 highlight_bbox: list | None) -> None:
+        super().__init__()
+        self.origin_path = origin_path
+        self.page_number = page_number
+        self.zoom = zoom
+        self.highlight_bbox = highlight_bbox
+
+    def run(self) -> None:
+        try:
+            import fitz
+
+            with fitz.open(self.origin_path) as document:
+                page = document.load_page(self.page_number)
+                matrix = fitz.Matrix(self.zoom, self.zoom)
+                pix = page.get_pixmap(matrix=matrix, alpha=False)
+                image = QImage(
+                    pix.samples,
+                    pix.width,
+                    pix.height,
+                    pix.stride,
+                    QImage.Format_RGB888,
+                ).copy()
+                if self.highlight_bbox and len(self.highlight_bbox) == 4:
+                    x0, y0, x1, y1 = self.highlight_bbox
+                    painter = QPainter(image)
+                    painter.setPen(QColor(230, 60, 60, 220))
+                    painter.drawRect(
+                        int(x0 * self.zoom),
+                        int(y0 * self.zoom),
+                        int((x1 - x0) * self.zoom),
+                        int((y1 - y0) * self.zoom),
+                    )
+                    painter.end()
+                self.loaded.emit(image, self.page_number + 1, document.page_count)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class _ExcelSheetWorker(QThread):
+    """后台加载 Excel 指定 Sheet 的数据用于预览。"""
+    loaded = Signal(object, object, object)  # headers, rows, highlight(row_start,row_end)
+    failed = Signal(str)
+
+    def __init__(self, origin_path: Path, sheet_name: str,
+                 row_start: int | None, row_end: int | None) -> None:
+        super().__init__()
+        self.origin_path = origin_path
+        self.sheet_name = sheet_name
+        self.row_start = row_start
+        self.row_end = row_end
+
+    def run(self) -> None:
+        try:
+            import openpyxl
+
+            workbook = openpyxl.load_workbook(
+                self.origin_path, read_only=True, data_only=True
+            )
+            try:
+                worksheet = (
+                    workbook[self.sheet_name]
+                    if self.sheet_name and self.sheet_name in workbook.sheetnames
+                    else workbook.active
+                )
+                headers = []
+                rows = []
+                for row_index, row in enumerate(worksheet.iter_rows(values_only=True)):
+                    values = ["" if value is None else str(value) for value in row]
+                    if row_index == 0:
+                        headers = values
+                    else:
+                        rows.append(values)
+            finally:
+                workbook.close()
+            self.loaded.emit(headers, rows, (self.row_start, self.row_end))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
+class SourcePreviewDialog(QDialog):
+    """应用内引用定位预览：PDF 渲染页 / Excel 表格，原文件缺失时退化为索引内容。"""
+
+    def __init__(
+        self,
+        source: Dict[str, Any],
+        origin_path: Path,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.source = source
+        self.origin_path = origin_path
+        self.setWindowTitle("引用定位预览")
+        self.resize(760, 560)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        title = QLabel(str(source.get("filename") or "未知文件"))
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+
+        if not origin_path.exists():
+            self._build_index_fallback(layout, source)
+            return
+
+        suffix = origin_path.suffix.casefold()
+        if suffix == ".pdf":
+            self._build_pdf_preview(layout, source)
+        elif suffix in (".xlsx", ".xls"):
+            self._build_excel_preview(layout, source)
+        else:
+            self._build_index_fallback(layout, source)
+
+    # ---------- PDF ----------
+    def _build_pdf_preview(self, layout: QVBoxLayout, source: Dict[str, Any]) -> None:
+        anchor = source.get("source_anchor") or {}
+        page_number = int(anchor.get("page") or source.get("page_or_sheet") or 1) - 1
+        page_number = max(page_number, 0)
+        highlight = source.get("bbox")
+        self._pdf_page = page_number
+        self._pdf_zoom = 1.5
+
+        self._pdf_label = QLabel("加载中…")
+        self._pdf_label.setAlignment(Qt.AlignCenter)
+        self._pdf_label.setMinimumHeight(420)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._pdf_label)
+        layout.addWidget(scroll, 1)
+
+        controls = QHBoxLayout()
+        prev_btn = QPushButton("上一页")
+        prev_btn.clicked.connect(lambda: self._pdf_render(self._pdf_page - 1))
+        controls.addWidget(prev_btn)
+        self._pdf_page_label = QLabel("")
+        self._pdf_page_label.setObjectName("mutedText")
+        controls.addWidget(self._pdf_page_label)
+        next_btn = QPushButton("下一页")
+        next_btn.clicked.connect(lambda: self._pdf_render(self._pdf_page + 1))
+        controls.addWidget(next_btn)
+        controls.addStretch()
+        zoom_out = QPushButton("缩小")
+        zoom_out.clicked.connect(lambda: self._set_pdf_zoom(self._pdf_zoom * 0.8))
+        controls.addWidget(zoom_out)
+        zoom_in = QPushButton("放大")
+        zoom_in.clicked.connect(lambda: self._set_pdf_zoom(self._pdf_zoom * 1.25))
+        controls.addWidget(zoom_in)
+        open_btn = QPushButton("打开原文件")
+        open_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.origin_path)))
+        )
+        controls.addWidget(open_btn)
+        layout.addLayout(controls)
+
+        self._pdf_render(self._pdf_page)
+
+    def _pdf_render(self, page_number: int) -> None:
+        page_count = getattr(self, "_pdf_page_count", None)
+        if page_count is not None and page_number < 0:
+            return
+        if page_count is not None and page_number >= page_count:
+            return
+        self._pdf_page = page_number
+        worker = _PdfPageWorker(
+            self.origin_path,
+            max(page_number, 0),
+            self._pdf_zoom,
+            self.source.get("bbox"),
+        )
+        worker.loaded.connect(self._pdf_loaded)
+        worker.failed.connect(lambda msg: self._pdf_label.setText(f"加载失败：{msg}"))
+        worker.finished.connect(lambda: worker.deleteLater())
+        worker.start()
+
+    def _pdf_loaded(self, image: QImage, page_number: int, page_count: int) -> None:
+        self._pdf_page_count = page_count
+        self._pdf_label.setPixmap(QPixmap.fromImage(image))
+        self._pdf_page_label.setText(f"{page_number} / {page_count}")
+
+    def _set_pdf_zoom(self, zoom: float) -> None:
+        zoom = min(max(zoom, 0.5), 5.0)
+        self._pdf_zoom = zoom
+        self._pdf_render(self._pdf_page)
+
+    # ---------- Excel ----------
+    def _build_excel_preview(self, layout: QVBoxLayout, source: Dict[str, Any]) -> None:
+        anchor = source.get("source_anchor") or {}
+        sheet_name = str(anchor.get("sheet") or source.get("page_or_sheet") or "")
+        row_start = anchor.get("row_start") or source.get("row_start")
+        row_end = anchor.get("row_end") or source.get("row_end")
+        self._excel_highlight = (row_start, row_end)
+
+        self._table = QTableWidget(0, 0)
+        self._table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self._table.verticalHeader().setVisible(False)
+        layout.addWidget(self._table, 1)
+
+        controls = QHBoxLayout()
+        self._excel_info = QLabel("加载中…")
+        self._excel_info.setObjectName("mutedText")
+        controls.addWidget(self._excel_info)
+        controls.addStretch()
+        open_btn = QPushButton("打开原文件")
+        open_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.origin_path)))
+        )
+        controls.addWidget(open_btn)
+        layout.addLayout(controls)
+
+        worker = _ExcelSheetWorker(self.origin_path, sheet_name, row_start, row_end)
+        worker.loaded.connect(self._excel_loaded)
+        worker.failed.connect(lambda msg: self._excel_info.setText(f"加载失败：{msg}"))
+        worker.finished.connect(lambda: worker.deleteLater())
+        worker.start()
+
+    def _excel_loaded(self, headers: list, rows: list, highlight: tuple) -> None:
+        self._table.setColumnCount(len(headers) or 1)
+        self._table.setHorizontalHeaderLabels(
+            [str(h) if h else "" for h in headers] or [""]
+        )
+        self._table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            for col_index in range(len(headers) or len(row)):
+                value = row[col_index] if col_index < len(row) else ""
+                item = QTableWidgetItem(str(value))
+                self._table.setItem(row_index, col_index, item)
+        row_start, row_end = highlight
+        if row_start is not None and row_end is not None:
+            start = max(int(row_start) - 1, 0)
+            end = min(int(row_end) - 1, len(rows) - 1)
+            if start <= end:
+                self._table.setRangeSelected(
+                    self._table.model().index(start, 0),
+                    self._table.model().index(end, self._table.columnCount() - 1),
+                )
+                self._table.scrollToItem(self._table.item(start, 0))
+        self._excel_info.setText(
+            f"{len(rows)} 行 × {len(headers)} 列"
+            + (f"，高亮行 {row_start}-{row_end}" if row_start is not None else "")
+        )
+
+    # ---------- 索引内容兜底 ----------
+    def _build_index_fallback(self, layout: QVBoxLayout, source: Dict[str, Any]) -> None:
+        note = QLabel("原文件不存在，显示索引中保存的内容：")
+        note.setObjectName("mutedText")
+        layout.addWidget(note)
+        content = QPlainTextEdit()
+        content.setReadOnly(True)
+        content.setPlainText(
+            str(source.get("display_content") or source.get("content") or "")
+        )
+        layout.addWidget(content, 1)
+
+
+SUMMARY_PROMPT = """你是一个对话摘要助手。给定一段多轮问答记录，请用不超过150字的中文概括：
+
+1. 用户主要关心的问题或话题
+2. 已获得的关键结论或数据（如果有）
+
+只输出摘要文本，不要加前缀或解释。
+
+对话记录：
+{transcript}
+
+摘要："""
+
+
+async def _summarize_with_llm(
+    transcript: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+) -> str:
+    """调用 LLM 生成对话摘要。失败时返回空字符串，由调用方回退规则提取。"""
+    try:
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": SUMMARY_PROMPT.format(transcript=transcript),
+                }
+            ],
+            temperature=0.3,
+            timeout=15,
+        )
+        text = (response.choices[0].message.content or "").strip()
+        return text
+    except Exception:
+        return ""
+
+
+async def _save_error_message(conv_id: str | None, message: str) -> None:
+    """后台保存一条助手错误消息，避免 UI 线程阻塞。"""
+    if not conv_id:
+        return
+    async with async_session_factory() as db:
+        await ConversationService.add_message(
+            db, conv_id, role="assistant", error=message
+        )
+        await db.commit()
+
+
+async def _maybe_summarize_conversation(
+    conv_id: str,
+    *,
+    api_key: str = "",
+    base_url: str = "",
+    model: str = "",
+    offline: bool = True,
+) -> None:
+    """当消息数超过阈值时生成对话摘要。在后台线程调用，不阻塞 UI。"""
+    if not conv_id:
+        return
+    async with async_session_factory() as db:
+        conv = await ConversationService.get_conversation(db, conv_id)
+        if (
+            conv is None
+            or (conv.message_count or 0) < settings.SUMMARY_TRIGGER_MESSAGE_COUNT
+        ):
+            return
+        summary_text, recent_msgs = await ConversationService.get_active_context(
+            db, conv_id
+        )
+        if summary_text and len(recent_msgs) <= 4:
+            return
+        transcript_lines = []
+        user_questions = []
+        for message in recent_msgs[-12:]:
+            if message.role == "user" and message.original_query:
+                transcript_lines.append(f"[用户] {message.original_query}")
+                user_questions.append(message.original_query)
+            elif message.role == "assistant":
+                answer = message.answer or message.error or "(无回答)"
+                transcript_lines.append(f"[助手] {answer[:200]}")
+        transcript = "\n".join(transcript_lines)
+        if not user_questions:
+            return
+        llm_summary = ""
+        if api_key and not offline:
+            llm_summary = await _summarize_with_llm(
+                transcript, api_key, base_url, model
+            )
+        if not llm_summary:
+            topics = "；".join(question[:60] for question in user_questions[:4])
+            llm_summary = f"对话涉及以下话题：{topics}"
+        if recent_msgs:
+            await ConversationService.generate_summary(
+                db,
+                conv_id,
+                llm_summary_text=llm_summary,
+                start_message_id=recent_msgs[0].id,
+                end_message_id=recent_msgs[-1].id,
+                token_count=len(llm_summary) // 2,
+            )
+        await db.commit()
 
 
 class MainWindow(QMainWindow):
@@ -270,6 +829,8 @@ class MainWindow(QMainWindow):
         self._active_index_worker: IndexWorker | None = None
         self._settings_loading = False
         self._network_active = False
+        self._current_conv_id: str | None = None
+        self._conversations: list = []
 
         self.setWindowTitle("本地知识库")
         self.setMinimumSize(780, 620)
@@ -286,6 +847,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("就绪")
         self._load_settings()
         self.refresh_documents()
+        self._ensure_chat_db()
+        self._load_conversations()
+        self._cleanup_old_data()
+        self.start_disk_stats()
 
     def _initialize_release_settings(self) -> None:
         current_version = int(self.settings.value("release/schema_version", 0) or 0)
@@ -310,60 +875,100 @@ class MainWindow(QMainWindow):
 
     def _build_chat_tab(self) -> QWidget:
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        outer = QSplitter(Qt.Horizontal)
+        outer_layout = QVBoxLayout(page)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.addWidget(outer)
+
+        # ---- Left: Conversation sidebar ----
+        sidebar = QWidget()
+        sidebar.setMaximumWidth(220)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(12, 12, 6, 12)
+        sidebar_layout.setSpacing(6)
+
+        conv_heading = QLabel("对话列表")
+        conv_heading.setObjectName("sectionTitle")
+        sidebar_layout.addWidget(conv_heading)
+
+        self.conv_search_input = QLineEdit()
+        self.conv_search_input.setPlaceholderText("搜索对话...")
+        self.conv_search_input.textChanged.connect(self._filter_conversations)
+        sidebar_layout.addWidget(self.conv_search_input)
+
+        self.conv_new_btn = QPushButton("+ 新对话")
+        self.conv_new_btn.clicked.connect(self._new_conversation)
+        sidebar_layout.addWidget(self.conv_new_btn)
+
+        self.conv_list = QListWidget()
+        self.conv_list.currentRowChanged.connect(self._conversation_selected)
+        sidebar_layout.addWidget(self.conv_list, 1)
+
+        conv_btn_row = QHBoxLayout()
+        self.conv_delete_btn = QPushButton("删除")
+        self.conv_delete_btn.setObjectName("dangerButton")
+        self.conv_delete_btn.clicked.connect(self._delete_conversation)
+        conv_btn_row.addWidget(self.conv_delete_btn)
+        self.conv_export_btn = QPushButton("导出")
+        self.conv_export_btn.clicked.connect(self._export_conversation)
+        conv_btn_row.addWidget(self.conv_export_btn)
+        sidebar_layout.addLayout(conv_btn_row)
+
+        self.conv_clear_all_btn = QPushButton("清空全部")
+        self.conv_clear_all_btn.setObjectName("dangerButton")
+        self.conv_clear_all_btn.clicked.connect(self._clear_all_conversations)
+        sidebar_layout.addWidget(self.conv_clear_all_btn)
+
+        outer.addWidget(sidebar)
+
+        # ---- Right: Chat area ----
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(6, 12, 12, 12)
+        right_layout.setSpacing(10)
 
         heading = QLabel("知识库问答")
         heading.setObjectName("pageTitle")
-        layout.addWidget(heading)
+        right_layout.addWidget(heading)
 
+        # Message history
+        self.message_edit = QPlainTextEdit()
+        self.message_edit.setReadOnly(True)
+        self.message_edit.setPlaceholderText("选择或创建对话开始提问")
+        self.message_edit.setMaximumBlockCount(5000)
+        right_layout.addWidget(self.message_edit, 1)
+
+        # Input area
         self.query_input = QPlainTextEdit()
-        self.query_input.setPlaceholderText("输入与已添加文档相关的问题")
-        self.query_input.setMaximumHeight(110)
-        layout.addWidget(self.query_input)
+        self.query_input.setPlaceholderText("输入与已添加文档相关的问题 (Ctrl+Enter 发送)")
+        self.query_input.setMaximumHeight(80)
+        QShortcut(QKeySequence("Ctrl+Return"), self.query_input, self.ask_question)
+        right_layout.addWidget(self.query_input)
 
         actions = QHBoxLayout()
         self.use_llm_checkbox = QCheckBox("使用 LLM 汇总答案")
         self.use_llm_checkbox.setChecked(True)
         actions.addWidget(self.use_llm_checkbox)
-        self.use_embedding_checkbox = QCheckBox("使用远程 Embedding")
+        self.use_embedding_checkbox = QCheckBox("远程 Embedding")
         actions.addWidget(self.use_embedding_checkbox)
-        self.use_reranker_checkbox = QCheckBox("使用远程 Reranker")
+        self.use_reranker_checkbox = QCheckBox("远程 Reranker")
         actions.addWidget(self.use_reranker_checkbox)
         actions.addStretch()
+
+        self.network_status_label = QLabel("模式：—")
+        self.network_status_label.setObjectName("networkStatus")
+        actions.addWidget(self.network_status_label)
 
         self.ask_button = QPushButton("查询")
         self.ask_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowForward))
         self.ask_button.clicked.connect(self.ask_question)
         actions.addWidget(self.ask_button)
-        layout.addLayout(actions)
+        right_layout.addLayout(actions)
 
-        self.network_status_label = QLabel("正在连接远程服务…")
-        self.network_status_label.setObjectName("networkStatus")
-        self.network_status_label.setVisible(False)
-        layout.addWidget(self.network_status_label)
-
-        splitter = QSplitter(Qt.Vertical)
-
-        answer_panel = QWidget()
-        answer_layout = QVBoxLayout(answer_panel)
-        answer_layout.setContentsMargins(0, 0, 0, 0)
-        answer_label = QLabel("答案")
-        answer_label.setObjectName("sectionTitle")
-        answer_layout.addWidget(answer_label)
-        self.answer_output = QPlainTextEdit()
-        self.answer_output.setReadOnly(True)
-        self.answer_output.setPlaceholderText("答案会显示在这里")
-        answer_layout.addWidget(self.answer_output)
-        splitter.addWidget(answer_panel)
-
-        sources_panel = QWidget()
-        sources_layout = QVBoxLayout(sources_panel)
-        sources_layout.setContentsMargins(0, 0, 0, 0)
+        # Source panel (collapsible)
         sources_label = QLabel("引用来源")
         sources_label.setObjectName("sectionTitle")
-        sources_layout.addWidget(sources_label)
+        right_layout.addWidget(sources_label)
 
         self.sources_container = QWidget()
         self.sources_layout = QVBoxLayout(self.sources_container)
@@ -371,16 +976,250 @@ class MainWindow(QMainWindow):
         self.sources_layout.setSpacing(8)
         self.sources_layout.addStretch()
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(self.sources_container)
-        sources_layout.addWidget(scroll)
-        splitter.addWidget(sources_panel)
-        splitter.setSizes([360, 230])
+        sources_scroll = QScrollArea()
+        sources_scroll.setWidgetResizable(True)
+        sources_scroll.setFrameShape(QFrame.NoFrame)
+        sources_scroll.setMaximumHeight(200)
+        sources_scroll.setWidget(self.sources_container)
+        right_layout.addWidget(sources_scroll)
 
-        layout.addWidget(splitter, 1)
+        outer.addWidget(right_panel)
+        outer.setSizes([200, 760])
         return page
+
+    # ==================== P1-3 Conversation Management ====================
+
+    def _ensure_chat_db(self) -> None:
+        """确保聊天相关数据表已创建。"""
+        try:
+            asyncio.run(init_db())
+        except Exception:
+            pass
+
+    def _load_conversations(self) -> None:
+        """从数据库加载会话列表到侧边栏。"""
+        async def _load():
+            async with async_session_factory() as db:
+                return await ConversationService.list_conversations(db)
+
+        try:
+            self._conversations = asyncio.run(_load())
+        except Exception:
+            self._conversations = []
+
+        current_row = self.conv_list.currentRow()
+        self.conv_list.blockSignals(True)
+        self.conv_list.clear()
+        for conv in self._conversations:
+            self.conv_list.addItem(
+                f"{conv.title}  ({conv.message_count})"
+            )
+        if 0 <= current_row < len(self._conversations):
+            self.conv_list.setCurrentRow(current_row)
+        elif self._conversations and self._current_conv_id:
+            # Re-select
+            for i, c in enumerate(self._conversations):
+                if c.id == self._current_conv_id:
+                    self.conv_list.setCurrentRow(i)
+                    break
+        self.conv_list.blockSignals(False)
+
+    def _set_chat_text(self, text: str) -> None:
+        """设置聊天框文本并滚动到底部（不回到开头）。"""
+        self.message_edit.setPlainText(text)
+        # 延迟到文本渲染完成后再滚动，确保滚动条 maximum 已更新
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(0, self._scroll_chat_to_bottom)
+
+    def _scroll_chat_to_bottom(self) -> None:
+        bar = self.message_edit.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+    def _cleanup_old_data(self) -> None:
+        """启动时清理过期会话和检索缓存。"""
+        async def _cleanup():
+            async with async_session_factory() as db:
+                count = await ConversationService.cleanup_expired(db)
+                await db.commit()
+                return count
+
+        try:
+            count = asyncio.run(_cleanup())
+            if count > 0:
+                self.statusBar().showMessage(f"已清理 {count} 个过期对话", 3000)
+        except Exception:
+            pass
+
+    def _invalidate_retrieval_cache(self) -> None:
+        """知识库变更后使检索缓存失效。"""
+        async def _invalidate():
+            async with async_session_factory() as db:
+                await ConversationService.invalidate_retrieval_cache(db)
+                await db.commit()
+
+        try:
+            asyncio.run(_invalidate())
+        except Exception:
+            pass
+
+    def _new_conversation(self) -> None:
+        async def _create():
+            async with async_session_factory() as db:
+                conv = await ConversationService.create_conversation(db)
+                await db.commit()
+                return conv
+
+        try:
+            conv = asyncio.run(_create())
+            self._current_conv_id = conv.id
+            self._load_conversations()
+            self._set_chat_text("新对话已创建，开始提问吧。")
+            self.query_input.setFocus()
+        except Exception as exc:
+            self.statusBar().showMessage(f"创建失败: {exc}")
+
+    def _conversation_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self._conversations):
+            return
+        conv = self._conversations[row]
+        self._current_conv_id = conv.id
+
+        async def _load_msgs():
+            async with async_session_factory() as db:
+                return await ConversationService.get_messages(db, conv.id, limit=50)
+
+        try:
+            messages = asyncio.run(_load_msgs())
+        except Exception:
+            messages = []
+
+        lines = []
+        for m in messages:
+            if m.role == "user" and m.original_query:
+                rw = f" [改写: {m.rewritten_query}]" if m.rewritten_query else ""
+                lines.append(f"🙂 你: {m.original_query}{rw}")
+            elif m.role == "assistant":
+                text = m.answer or m.error or "(无回答)"
+                lines.append(f"🤖 助手: {text}\n")
+        self._set_chat_text("\n\n".join(lines) if lines else "开始新对话")
+
+    def _delete_conversation(self) -> None:
+        row = self.conv_list.currentRow()
+        if row < 0 or row >= len(self._conversations):
+            return
+        conv = self._conversations[row]
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f'删除会话 "{conv.title}"？',
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        async def _delete():
+            async with async_session_factory() as db:
+                ok = await ConversationService.delete_conversation(db, conv.id)
+                await db.commit()
+                return ok
+
+        try:
+            asyncio.run(_delete())
+            if self._current_conv_id == conv.id:
+                self._current_conv_id = None
+                self._set_chat_text("选择或创建对话开始提问")
+            self._load_conversations()
+        except Exception as exc:
+            self.statusBar().showMessage(f"删除失败: {exc}")
+
+    def _filter_conversations(self, keyword: str) -> None:
+        keyword = keyword.strip()
+        if not keyword:
+            self._load_conversations()
+            return
+
+        async def _search():
+            async with async_session_factory() as db:
+                return await ConversationService.search_conversations(db, keyword)
+
+        try:
+            results = asyncio.run(_search())
+        except Exception:
+            return
+
+        self.conv_list.blockSignals(True)
+        self.conv_list.clear()
+        for conv in results:
+            self.conv_list.addItem(f"{conv.title}  ({conv.message_count})")
+        self.conv_list.blockSignals(False)
+
+    def _export_conversation(self) -> None:
+        if not self._current_conv_id:
+            QMessageBox.information(self, "未选择", "请先选择一个对话。")
+            return
+
+        async def _export():
+            async with async_session_factory() as db:
+                return await ConversationService.export_conversation(
+                    db, self._current_conv_id
+                )
+
+        try:
+            data = asyncio.run(_export())
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", str(exc))
+            return
+
+        if data is None:
+            QMessageBox.information(self, "导出失败", "会话不存在。")
+            return
+
+        import json
+        dest, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出对话",
+            f"{data.get('title', 'conversation')}.json",
+            "JSON (*.json)",
+        )
+        if not dest:
+            return
+        try:
+            Path(dest).write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            self.statusBar().showMessage(f"已导出到 {dest}", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", str(exc))
+
+    def _clear_all_conversations(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "确认清空",
+            "确定要删除所有对话记录？此操作不可撤销。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        async def _clear():
+            async with async_session_factory() as db:
+                count = await ConversationService.clear_all_conversations(db)
+                await db.commit()
+                return count
+
+        try:
+            count = asyncio.run(_clear())
+            self._current_conv_id = None
+            self._conversations = []
+            self.conv_list.clear()
+            self._set_chat_text("所有对话已清空。")
+            self.start_disk_stats()
+            self.statusBar().showMessage(f"已清空 {count} 个对话", 5000)
+        except Exception as exc:
+            self.statusBar().showMessage(f"清空失败: {exc}")
 
     def _build_knowledge_tab(self) -> QWidget:
         page = QWidget()
@@ -417,6 +1256,13 @@ class MainWindow(QMainWindow):
         self.diagnose_button.clicked.connect(self.start_index_diagnosis)
         actions.addWidget(self.diagnose_button)
 
+        self.data_dir_button = QPushButton("数据目录")
+        self.data_dir_button.setIcon(
+            self.style().standardIcon(QStyle.SP_DirOpenIcon)
+        )
+        self.data_dir_button.clicked.connect(self.open_data_directory)
+        actions.addWidget(self.data_dir_button)
+
         actions.addStretch()
 
         self.delete_button = QPushButton("删除所选")
@@ -446,22 +1292,33 @@ class MainWindow(QMainWindow):
         progress_row.addWidget(self.cancel_index_button)
         layout.addLayout(progress_row)
 
-        self.documents_table = QTableWidget(0, 3)
-        self.documents_table.setHorizontalHeaderLabels(["文件名", "片段", "字符数"])
+        self.documents_table = QTableWidget(0, 4)
+        self.documents_table.setHorizontalHeaderLabels(["文件名", "页数/表数", "节点", "片段"])
         self.documents_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.documents_table.setSelectionMode(QTableWidget.SingleSelection)
         self.documents_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.documents_table.verticalHeader().setVisible(False)
         header = self.documents_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        for index in range(1, 4):
+            header.setSectionResizeMode(index, QHeaderView.ResizeToContents)
         layout.addWidget(self.documents_table, 1)
 
         self.index_path_label = QLabel()
         self.index_path_label.setObjectName("mutedText")
         self.index_path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.index_path_label)
+
+        disk_row = QHBoxLayout()
+        self.disk_usage_label = QLabel("磁盘占用：计算中…")
+        self.disk_usage_label.setObjectName("mutedText")
+        disk_row.addWidget(self.disk_usage_label)
+        disk_row.addStretch()
+        self.refresh_disk_button = QPushButton("刷新")
+        self.refresh_disk_button.setMaximumWidth(64)
+        self.refresh_disk_button.clicked.connect(self.start_disk_stats)
+        disk_row.addWidget(self.refresh_disk_button)
+        layout.addLayout(disk_row)
         return page
 
     def _build_settings_tab(self) -> QWidget:
@@ -591,7 +1448,9 @@ class MainWindow(QMainWindow):
                 self.settings.value("llm/base_url", "https://api.deepseek.com", str)
             )
             self.model_input.setText(
-                self.settings.value("llm/model", "deepseek-v4-flash", str)
+                normalize_llm_model(
+                    self.settings.value("llm/model", DEFAULT_LLM_MODEL, str)
+                )
             )
             self.retrieval_api_key_input.setText(
                 get_secret(DEFAULT_SERVICE, "retrieval_api_key")
@@ -646,7 +1505,9 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             credential_errors.append(str(exc))
         self.settings.setValue("llm/base_url", self.base_url_input.text().strip())
-        self.settings.setValue("llm/model", self.model_input.text().strip())
+        normalized_model = normalize_llm_model(self.model_input.text())
+        self.settings.setValue("llm/model", normalized_model)
+        self.model_input.setText(normalized_model)
         self.settings.setValue(
             "retrieval/base_url",
             self.retrieval_base_url_input.text().strip(),
@@ -709,15 +1570,45 @@ class MainWindow(QMainWindow):
         ):
             checkbox.setEnabled(not offline)
         self.offline_note.setVisible(offline)
-        if self._settings_loading:
-            return
         if offline:
-            self.network_status_label.setVisible(False)
+            self._set_retrieval_status("模式：— · 完全离线")
             self._network_active = False
 
     def _set_network_indicator(self, active: bool) -> None:
         self._network_active = bool(active)
-        self.network_status_label.setVisible(active)
+        if active:
+            self._set_retrieval_status("模式：— · 调用中…")
+
+    def _set_retrieval_status(self, text: str) -> None:
+        self.network_status_label.setText(text)
+
+    def _build_retrieval_status(self, retrieval: Dict[str, Any], mode: str) -> str:
+        retrieval_mode = str(retrieval.get("mode") or "")
+        parts = [f"模式：{self._retrieval_mode_label(retrieval_mode)}"]
+        if retrieval.get("offline"):
+            parts.append("完全离线")
+        elif mode in ("llm_error", "embedding_error", "reranker_error"):
+            parts.append("失败")
+        elif retrieval.get("cache_hit"):
+            parts.append("缓存命中")
+        elif retrieval.get("remote"):
+            parts.append("远程调用")
+        else:
+            parts.append("本地")
+        return " · ".join(parts)
+
+    @staticmethod
+    def _retrieval_mode_label(mode: str) -> str:
+        return {
+            "bm25": "BM25",
+            "hybrid": "混合检索",
+            "bm25_rerank": "BM25 + Reranker",
+            "hybrid_rerank": "混合 + Reranker",
+            "structured": "结构化计算",
+            "summary": "文档概览",
+            "inventory": "文件清单",
+            "mixed": "混合计算",
+        }.get(mode, mode or "—")
 
     def _consented_endpoints(self) -> set[str]:
         raw = str(self.settings.value("privacy/remote_consent", "", str) or "")
@@ -918,6 +1809,8 @@ class MainWindow(QMainWindow):
         self._set_indexing_state(False)
         self._set_busy(False)
         self.refresh_documents()
+        self._invalidate_retrieval_cache()
+        self.start_disk_stats()
         added = int(payload.get("added_count") or 0)
         updated = int(payload.get("updated_count") or 0)
         removed = int(payload.get("removed_count") or 0)
@@ -1006,6 +1899,52 @@ class MainWindow(QMainWindow):
         lines.extend(f"警告：{item.get('message')}" for item in warnings)
         QMessageBox.information(self, "索引诊断", "\n".join(lines))
 
+    def _data_root(self) -> Path:
+        """应用数据根目录：EXE 用 AppDataLocation，开发用仓库 data。"""
+        if getattr(sys, "frozen", False):
+            return Path(
+                QStandardPaths.writableLocation(QStandardPaths.AppDataLocation)
+            ).resolve()
+        return Path("data").resolve()
+
+    def open_data_directory(self) -> None:
+        root = self._data_root()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+
+    def start_disk_stats(self) -> None:
+        """后台统计索引与聊天数据库磁盘占用。"""
+        self.disk_usage_label.setText("磁盘占用：计算中…")
+        worker = DiskStatsWorker(self.index_dir, _desktop_db_path())
+        worker.completed.connect(self._disk_stats_completed)
+        worker.finished.connect(lambda: self._release_worker(worker))
+        self._workers.append(worker)
+        worker.start()
+
+    def _disk_stats_completed(self, payload: Dict[str, Any]) -> None:
+        index_bytes = int(payload.get("index_bytes") or 0)
+        db_bytes = int(payload.get("db_bytes") or 0)
+        self.disk_usage_label.setText(
+            f"磁盘占用：索引 {_human_size(index_bytes)} · "
+            f"聊天数据库 {_human_size(db_bytes)}"
+        )
+
+    def _structure_label(self, document: dict) -> str:
+        """PDF 页数 / Excel 表数；旧索引缺精确统计时显示"未知"需重建。"""
+        page_count = document.get("page_count")
+        sheet_count = document.get("sheet_count")
+        if page_count is not None:
+            return f"{page_count} 页"
+        if sheet_count is not None:
+            return f"{sheet_count} 表"
+        filename = str(document.get("filename") or "").casefold()
+        if filename.endswith((".pdf", ".xlsx", ".xls", ".csv")):
+            return "未知"
+        return "—"
+
     def refresh_documents(self) -> None:
         index_error = ""
         try:
@@ -1019,10 +1958,13 @@ class MainWindow(QMainWindow):
             filename_item.setData(Qt.UserRole, str(document.get("filename") or ""))
             self.documents_table.setItem(row, 0, filename_item)
             self.documents_table.setItem(
-                row, 1, QTableWidgetItem(str(document.get("chunk_count") or 0))
+                row, 1, QTableWidgetItem(self._structure_label(document))
             )
             self.documents_table.setItem(
-                row, 2, QTableWidgetItem(str(document.get("content_chars") or 0))
+                row, 2, QTableWidgetItem(str(document.get("node_count") or 0))
+            )
+            self.documents_table.setItem(
+                row, 3, QTableWidgetItem(str(document.get("chunk_count") or 0))
             )
         label = f"索引位置：{self.index_dir}"
         if index_error:
@@ -1051,8 +1993,10 @@ class MainWindow(QMainWindow):
         try:
             delete_index_document(filename, self.index_dir)
             self.refresh_documents()
+            self._invalidate_retrieval_cache()
+            self.start_disk_stats()
             self.clear_sources()
-            self.answer_output.setPlainText("文档已删除。")
+            self._set_chat_text("文档已删除。")
             self.statusBar().showMessage("文档及索引已删除", 5000)
         except Exception as exc:
             QMessageBox.critical(self, "删除失败", str(exc))
@@ -1067,6 +2011,8 @@ class MainWindow(QMainWindow):
         use_llm = self.use_llm_checkbox.isChecked()
         use_embedding = self.use_embedding_checkbox.isChecked()
         use_reranker = self.use_reranker_checkbox.isChecked()
+
+        # 远程需求判断基于原问题（改写已移入后台线程，不阻塞 UI）。
         try:
             planning_documents = list_index_documents(self.index_dir)
         except IndexFormatError:
@@ -1099,17 +2045,23 @@ class MainWindow(QMainWindow):
 
         self.save_settings()
         self._set_busy(True, "正在检索并生成答案...")
-        self.answer_output.setPlainText("正在查询...")
         self.clear_sources()
         self._set_network_indicator(remote_requested)
 
+        # Show user question in chat
+        current = self.message_edit.toPlainText()
+        if current:
+            current += "\n\n"
+        self._set_chat_text(current + f"🙂 你: {query}\n\n🤖 助手: 正在查询...")
+
         worker = QueryWorker(
-            query=query,
-            index_dir=self.index_dir,
+            query,
+            self.index_dir,
+            conv_id=self._current_conv_id,
             use_llm=use_llm,
             llm_api_key=self.api_key_input.text().strip(),
             llm_base_url=self.base_url_input.text().strip(),
-            llm_model=self.model_input.text().strip(),
+            llm_model=normalize_llm_model(self.model_input.text()),
             use_embedding=use_embedding,
             use_reranker=use_reranker,
             retrieval_api_key=self.retrieval_api_key_input.text().strip(),
@@ -1123,15 +2075,35 @@ class MainWindow(QMainWindow):
         worker.finished.connect(lambda: self._release_worker(worker))
         self._workers.append(worker)
         worker.start()
+        self.query_input.clear()
 
     def _query_completed(self, payload: Dict[str, Any]) -> None:
         self._set_busy(False)
         self._set_network_indicator(False)
-        self.answer_output.setPlainText(str(payload.get("answer") or "没有返回答案。"))
+        answer = str(payload.get("answer") or "没有返回答案。")
         sources = payload.get("sources") or []
-        self.render_sources(sources)
         mode = str(payload.get("mode") or "")
         retrieval = payload.get("retrieval") or {}
+
+        # 更新实际检索模式与网络状态（持久状态行）
+        self._set_retrieval_status(self._build_retrieval_status(retrieval, mode))
+
+        # 后台 worker 已创建/复用会话并保存消息，这里只同步 UI 状态
+        conv_id = payload.get("conv_id") or self._current_conv_id
+        if conv_id:
+            self._current_conv_id = conv_id
+
+        # Show sources
+        self.render_sources(sources)
+
+        # Replace "正在查询..." in chat
+        current = self.message_edit.toPlainText()
+        current = current.replace("正在查询...", answer)
+        self._set_chat_text(current)
+
+        # Reload conversation list (updates message count)
+        self._load_conversations()
+
         if retrieval.get("offline"):
             self.statusBar().showMessage("完全离线模式，本地回答完成", 7000)
         elif mode == "llm_error":
@@ -1162,31 +2134,125 @@ class MainWindow(QMainWindow):
             self.sources_layout.insertWidget(0, empty)
             return
 
-        for source in sources:
-            box = QFrame()
-            box.setObjectName("sourceBox")
-            box_layout = QVBoxLayout(box)
-            box_layout.setContentsMargins(10, 8, 10, 8)
+        for index, source in enumerate(sources):
+            card = QFrame()
+            card.setObjectName("sourceBox")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_layout.setSpacing(6)
 
-            filename = QLabel(str(source.get("filename") or "未知文件"))
-            filename.setObjectName("sourceFilename")
-            box_layout.addWidget(filename)
+            header = QHBoxLayout()
+            location = self._source_location_text(source)
+            title_text = str(source.get("filename") or "未知文件")
+            if location:
+                title_text += f"  ·  {location}"
+            title = QLabel(title_text)
+            title.setObjectName("sourceFilename")
+            title.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            header.addWidget(title, 1)
+
+            copy_btn = QPushButton("复制")
+            copy_btn.setMaximumWidth(52)
+            copy_btn.clicked.connect(
+                lambda _=False, s=source: self._copy_source(s)
+            )
+            header.addWidget(copy_btn)
+
+            locate_btn = QPushButton("定位")
+            locate_btn.setMaximumWidth(52)
+            locate_btn.clicked.connect(
+                lambda _=False, s=source: self._locate_source(s)
+            )
+            header.addWidget(locate_btn)
+
+            toggle_btn = QPushButton("收起" if index == 0 else "展开")
+            toggle_btn.setMaximumWidth(52)
+            header.addWidget(toggle_btn)
+            card_layout.addLayout(header)
 
             content = QPlainTextEdit()
             content.setReadOnly(True)
-            # 表格优先展示延迟生成的展示文本（Markdown 表格），否则用检索片段。
             content.setPlainText(
                 str(source.get("display_content") or source.get("content") or "")
             )
             content.setMaximumHeight(125)
             content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            box_layout.addWidget(content)
-            self.sources_layout.insertWidget(self.sources_layout.count() - 1, box)
+            card_layout.addWidget(content)
+
+            def _make_toggle(button: QPushButton, editor: QPlainTextEdit) -> Callable:
+                def _toggle() -> None:
+                    visible = editor.isVisible()
+                    editor.setVisible(not visible)
+                    button.setText("收起" if not visible else "展开")
+
+                return _toggle
+
+            toggle_btn.clicked.connect(_make_toggle(toggle_btn, content))
+            # 第一条默认展开，其余收起
+            if index != 0:
+                content.setVisible(False)
+
+            self.sources_layout.insertWidget(self.sources_layout.count() - 1, card)
+
+    def _source_location_text(self, source: Dict[str, Any]) -> str:
+        anchor = source.get("source_anchor") or {}
+        parts = []
+        page = anchor.get("page") or source.get("page_or_sheet")
+        if page is not None:
+            parts.append(f"第 {page} 页")
+        sheet = anchor.get("sheet")
+        if sheet:
+            parts.append(f"Sheet {sheet}")
+        row_numbers = anchor.get("row_numbers")
+        if row_numbers:
+            first = str(row_numbers[0])
+            if len(row_numbers) > 1:
+                parts.append(f"行 {first}-{row_numbers[-1]}")
+            else:
+                parts.append(f"行 {first}")
+        return " · ".join(parts)
+
+    def _copy_source(self, source: Dict[str, Any]) -> None:
+        filename = str(source.get("filename") or "未知文件")
+        location = self._source_location_text(source)
+        content = str(
+            source.get("display_content") or source.get("content") or ""
+        )
+        markdown = f"**{filename}**"
+        if location:
+            markdown += f"（{location}）"
+        if content:
+            markdown += f"\n\n{content}"
+        QApplication.clipboard().setText(markdown)
+        self.statusBar().showMessage(f"已复制引用：{filename}", 3000)
+
+    def _resolve_origin_path(self, filename: str) -> Path:
+        try:
+            documents = list_index_documents(self.index_dir)
+        except Exception:
+            documents = []
+        for document in documents:
+            if str(document.get("filename") or "") == filename:
+                origin = document.get("origin_path")
+                if origin:
+                    return Path(str(origin))
+                break
+        return Path(filename)
+
+    def _locate_source(self, source: Dict[str, Any]) -> None:
+        filename = str(source.get("filename") or "")
+        origin_path = self._resolve_origin_path(filename)
+        dialog = SourcePreviewDialog(source, origin_path, self)
+        dialog.exec()
 
     def _task_failed(self, message: str) -> None:
         self._set_busy(False)
         self._set_network_indicator(False)
-        self.answer_output.setPlainText(f"操作失败：{message}")
+        # 后台 worker 已负责保存错误消息，这里只更新 UI。
+        current = self.message_edit.toPlainText()
+        current = current.replace("正在查询...", f"操作失败：{message}")
+        self._set_chat_text(current + "\n")
+        self._load_conversations()
         self.clear_sources()
         self.statusBar().showMessage("操作失败", 7000)
 
@@ -1197,6 +2263,10 @@ class MainWindow(QMainWindow):
         self.rebuild_button.setDisabled(busy)
         self.diagnose_button.setDisabled(busy)
         self.delete_button.setDisabled(busy)
+        self.conv_new_btn.setDisabled(busy)
+        self.conv_delete_btn.setDisabled(busy)
+        self.conv_export_btn.setDisabled(busy)
+        self.conv_clear_all_btn.setDisabled(busy)
         if message:
             self.statusBar().showMessage(message)
         if not busy:
@@ -1290,6 +2360,23 @@ QLineEdit, QPlainTextEdit, QTableWidget {
     selection-background-color: #bfdbfe;
     padding: 7px;
 }
+QListWidget {
+    background: #ffffff;
+    border: 1px solid #d9e0ea;
+    border-radius: 5px;
+    outline: none;
+}
+QListWidget::item {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f0f2f5;
+}
+QListWidget::item:selected {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+QListWidget::item:hover {
+    background: #f0f4ff;
+}
 QPushButton {
     background: #2563eb;
     color: #ffffff;
@@ -1320,17 +2407,157 @@ QStatusBar {
     background: #ffffff;
     border-top: 1px solid #d9e0ea;
 }
+QSplitter::handle {
+    background: #e9eef5;
+    width: 1px;
+}
 """
 
 
-def run_desktop(smoke_test: bool = False) -> int:
+def _write_ui_test_result(results: list[tuple[str, bool]], detail: str = "") -> None:
+    """把 UI 测试结果写到 exe 同级目录，供自动化验证。"""
+    import json
+
+    path = Path("ui_test_result.json")
+    path.write_text(
+        json.dumps(
+            {"results": results, "detail": detail},
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def run_desktop(smoke_test: bool = False, ui_test: bool = False) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName(ORGANIZATION)
     window = MainWindow()
     window.show()
-    if smoke_test:
+    if ui_test:
+        from PySide6.QtCore import QTimer
+
+        QTimer.singleShot(500, lambda: _run_ui_test(app, window))
+    elif smoke_test:
         from PySide6.QtCore import QTimer
 
         QTimer.singleShot(500, app.quit)
     return app.exec()
+
+
+def _run_ui_test(app: QApplication, window: "MainWindow") -> None:
+    """驱动真实 EXE 的按钮点击，验证聊天功能并写结果文件。"""
+    import time
+
+    from PySide6.QtCore import QTimer
+
+    results: list[tuple[str, bool]] = []
+    detail_lines: list[str] = []
+
+    def _finish() -> None:
+        _write_ui_test_result(results, "\n".join(detail_lines))
+        app.quit()
+
+    # 1. 新建会话
+    before = window.conv_list.count()
+    window.conv_new_btn.click()
+    time.sleep(0.5)
+    conv_ok = window.conv_list.count() == before + 1 and window._current_conv_id
+    results.append(("新建会话", conv_ok))
+    detail_lines.append(f"会话列表 {before} -> {window.conv_list.count()}, id={window._current_conv_id}")
+
+    # 2. 若知识库为空，先添加一个测试文档并等待索引完成
+    if window.documents_table.rowCount() == 0:
+        import tempfile
+        from pathlib import Path as _P
+
+        test_doc = _P(tempfile.gettempdir()) / "ekg_ui_test_doc.txt"
+        test_doc.write_text(
+            "员工请假制度：年假每年 10 天，病假需提供医院证明。报销制度：差旅费需提供发票，"
+            "住宿标准每晚不超过 500 元。",
+            encoding="utf-8",
+        )
+        window.start_indexing([test_doc])
+        deadline = time.time() + 60
+        indexed = False
+        while time.time() < deadline:
+            app.processEvents()
+            if window.documents_table.rowCount() >= 1:
+                indexed = True
+                break
+            time.sleep(0.3)
+        results.append(("文档索引", indexed))
+        detail_lines.append(f"文档数={window.documents_table.rowCount()}")
+        if not indexed:
+            detail_lines.append("索引超时，跳过查询")
+            _finish()
+            return
+
+    # 3. 查询（离线本地回答）
+    window.query_input.setPlainText("年假有几天？")
+    window.ask_button.click()
+    deadline = time.time() + 30
+    answer_text = ""
+    while time.time() < deadline:
+        txt = window.message_edit.toPlainText()
+        if "正在查询" not in txt and "助手" in txt:
+            answer_text = txt
+            break
+        app.processEvents()
+        time.sleep(0.3)
+    results.append(("查询响应", bool(answer_text)))
+    results.append(("回答非占位", "正在查询" not in answer_text and "当前知识库没有" not in answer_text))
+    results.append(("无模型token显示", "tokens" not in answer_text and "--- " not in answer_text))
+    detail_lines.append(f"回答长度={len(answer_text)}")
+
+    # 2b. 再追加一轮对话累积文本，验证滚动到底部
+    window.query_input.setPlainText("报销需要什么条件？")
+    window.ask_button.click()
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        txt = window.message_edit.toPlainText()
+        if "正在查询" not in txt and txt.endswith("助手"):
+            break
+        if "正在查询" not in txt and "助手" in txt:
+            break
+        app.processEvents()
+        time.sleep(0.3)
+    bar = window.message_edit.verticalScrollBar()
+    scroll_ok = bar.maximum() > 0 and bar.value() == bar.maximum()
+    results.append(("聊天框滚动到底部", scroll_ok))
+    detail_lines.append(f"滚动 value={bar.value()} max={bar.maximum()}")
+
+    # 3. DB 持久化验证
+    from app.core.database import async_session_factory
+    from app.services.conversation_service import ConversationService
+
+    async def _db_check():
+        async with async_session_factory() as db:
+            msgs = await ConversationService.get_messages(db, window._current_conv_id, limit=10)
+            return len(msgs)
+    try:
+        import asyncio
+        n = asyncio.run(_db_check())
+        results.append(("消息已持久化", n >= 2))
+        detail_lines.append(f"DB 消息数={n}")
+    except Exception as exc:
+        results.append(("消息已持久化", False))
+        detail_lines.append(f"DB 读取异常: {exc}")
+
+    # 4. 按钮状态（都应启用，证明未被禁用）
+    btn_ok = all([
+        window.ask_button.isEnabled(),
+        window.conv_new_btn.isEnabled(),
+        window.conv_delete_btn.isEnabled(),
+        window.conv_export_btn.isEnabled(),
+        window.conv_clear_all_btn.isEnabled(),
+    ])
+    results.append(("按钮全部启用", btn_ok))
+    detail_lines.append(
+        f"ask={window.ask_button.isEnabled()} new={window.conv_new_btn.isEnabled()} "
+        f"del={window.conv_delete_btn.isEnabled()} export={window.conv_export_btn.isEnabled()} "
+        f"clear={window.conv_clear_all_btn.isEnabled()}"
+    )
+
+    QTimer.singleShot(100, _finish)

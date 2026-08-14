@@ -77,6 +77,22 @@ class DesktopSettingsTests(unittest.TestCase):
         for extension in (".txt", ".md", ".pdf", ".csv", ".xlsx"):
             self.assertIn(f"*{extension}", desktop_main.DESKTOP_FILE_FILTER)
 
+    @patch.object(desktop_main, "QSettings", MemorySettings)
+    def test_saved_model_is_preserved(self) -> None:
+        MemorySettings.values = {"llm/model": "mimo-v2.5-free"}
+        window = desktop_main.MainWindow()
+        try:
+            self.assertEqual(window.model_input.text(), "mimo-v2.5-free")
+            window.model_input.setText("mimo-v2.5-free")
+            window.save_button.click()
+            self.assertEqual(
+                window.settings._values["llm/model"],
+                "mimo-v2.5-free",
+            )
+        finally:
+            window.close()
+            MemorySettings.values = {}
+
     @patch.object(
         desktop_main.QInputDialog,
         "getItem",

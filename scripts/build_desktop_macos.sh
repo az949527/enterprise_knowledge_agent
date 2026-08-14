@@ -18,11 +18,11 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
   "$PYTHON_BIN" -m venv "$VENV_DIR"
 fi
 
+DEPS="$("$VENV_DIR/bin/python" scripts/requirements_sections.py desktop build)"
 "$VENV_DIR/bin/python" -m pip install \
   --progress-bar on \
   --index-url "$INDEX_URL" \
-  -r requirements-desktop.txt \
-  -r requirements-desktop-build.txt
+  $DEPS
 
 RELEASE_ROOT="$ROOT/outputs/releases"
 DIST_DIR="$RELEASE_ROOT/macos"

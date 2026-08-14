@@ -9,7 +9,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -101,6 +101,118 @@ class OfflineGateTests(unittest.TestCase):
         self.assertEqual(result["mode"], "local_fallback")
         self.assertEqual(result["llm"]["error"], "offline_mode")
         openai_mock.assert_not_called()
+
+    @patch("openai.AsyncOpenAI")
+    @patch("app.lite.desktop_query.search_bm25_index")
+    def test_desktop_request_preserves_context_model_over_shared_settings(
+        self,
+        search_mock,
+        openai_mock,
+    ) -> None:
+        from app.core.config import settings
+
+        set_remote_access(True)
+        self.addCleanup(set_remote_access, False)
+        search_mock.return_value = [
+            {
+                "filename": "policy.txt",
+                "source_path": "policy.txt",
+                "chunk_index": 0,
+                "content": "local evidence",
+                "rank": 1,
+                "score": 1.0,
+            }
+        ]
+        openai_mock.return_value.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="answer [1]")
+                    )
+                ],
+                model="mimo-v2.5-free",
+                usage=None,
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(
+            settings,
+            "LLM_MODEL",
+            "deepseek-v4-pro",
+        ):
+            write_chunks(
+                Path(temp_dir),
+                [
+                    {
+                        "id": "policy.txt:0",
+                        "source_path": "policy.txt",
+                        "filename": "policy.txt",
+                        "chunk_index": 0,
+                        "content": "local evidence",
+                    }
+                ],
+            )
+            result = asyncio.run(
+                query_desktop_index(
+                    "question",
+                    temp_dir,
+                    use_llm=True,
+                    llm_api_key="sk-test12345678",
+                    llm_base_url="https://example.test/v1",
+                    llm_model="mimo-v2.5-free",
+                    use_embedding=False,
+                    use_reranker=False,
+                    retrieval_api_key="",
+                )
+            )
+
+        self.assertEqual(result["mode"], "llm")
+        create_mock = openai_mock.return_value.chat.completions.create
+        self.assertEqual(create_mock.call_args.kwargs["model"], "mimo-v2.5-free")
+        self.assertEqual(result["llm"]["model"], "mimo-v2.5-free")
+
+    @patch("openai.AsyncOpenAI")
+    def test_lite_request_does_not_fallback_to_shared_model(
+        self,
+        openai_mock,
+    ) -> None:
+        from app.core.config import DEFAULT_LLM_MODEL, settings
+
+        set_remote_access(True)
+        self.addCleanup(set_remote_access, False)
+        openai_mock.return_value.chat.completions.create = AsyncMock(
+            return_value=SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content="answer [1]")
+                    )
+                ],
+                model=DEFAULT_LLM_MODEL,
+                usage=None,
+            )
+        )
+
+        with patch.object(settings, "LLM_MODEL", "mimo-v2.5-free"):
+            result = asyncio.run(
+                answer_query(
+                    "question",
+                    [
+                        {
+                            "filename": "policy.txt",
+                            "chunk_index": 0,
+                            "content": "local evidence",
+                        }
+                    ],
+                    True,
+                    api_key="sk-test12345678",
+                    base_url="https://example.test/v1",
+                    model="",
+                )
+            )
+
+        self.assertEqual(result["mode"], "llm")
+        create_mock = openai_mock.return_value.chat.completions.create
+        self.assertEqual(create_mock.call_args.kwargs["model"], DEFAULT_LLM_MODEL)
 
     @patch("openai.AsyncOpenAI")
     def test_offline_gate_blocks_legacy_rag_llm(self, openai_mock) -> None:

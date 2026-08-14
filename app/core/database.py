@@ -59,4 +59,8 @@ async def init_db():
     async with engine.begin() as conn:
         from app.models.document import Document  # noqa: F401
         from app.models.chunk import Chunk  # noqa: F401
+        from app.models.conversation import Conversation  # noqa: F401
+        from app.models.message import Message  # noqa: F401
+        from app.models.conversation_summary import ConversationSummary  # noqa: F401
+        from app.models.retrieval_cache import RetrievalCache  # noqa: F401
         await conn.run_sync(Base.metadata.create_all)

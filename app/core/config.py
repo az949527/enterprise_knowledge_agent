@@ -16,6 +16,14 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 
 
+DEFAULT_LLM_MODEL = "deepseek-v4-flash"
+
+
+def normalize_llm_model(model: str | None) -> str:
+    candidate = (model or "").strip()
+    return candidate or DEFAULT_LLM_MODEL
+
+
 class Settings(BaseSettings):
     # ==================== 应用基础配置 ====================
     # 【跨项目通用】只要有 Web 服务都需要
@@ -37,7 +45,7 @@ class Settings(BaseSettings):
     # 【业务相关】这个项目用 DeepSeek，换别的 LLM 就改这里
     LLM_API_KEY: str = ""
     LLM_BASE_URL: str = "https://api.deepseek.com"
-    LLM_MODEL: str = "deepseek-v4-flash"
+    LLM_MODEL: str = DEFAULT_LLM_MODEL
 
     # RAG / Embedding
     EMBEDDING_MODEL: str = "shibing624/text2vec-base-chinese"  # 中文 embedding 模型
@@ -64,6 +72,16 @@ class Settings(BaseSettings):
     STRUCTURED_COMPUTATION_ENABLED: bool = True  # 计算类查询走确定性计算
     STRUCTURED_COMPUTATION_MAX_RESULT_ROWS: int = 20  # 结果最多返回行数
     STRUCTURED_COMPUTATION_MAX_SHEET_ROWS: int = 100_000  # 单 Sheet 处理行数上限
+
+    # P1-3 聊天与记忆
+    MAX_CONVERSATION_CONTEXT_TOKENS: int = 8000  # 对话上下文 token 上限
+    MAX_RECENT_MESSAGES: int = 10  # 最近消息保留条数
+    CONVERSATION_RETENTION_DAYS: int = 90  # 历史保留天数（0=永久）
+    RETRIEVAL_CACHE_ENABLED: bool = True  # 检索结果缓存
+    RETRIEVAL_CACHE_TTL_DAYS: int = 7  # 缓存有效期
+    SUMMARY_TRIGGER_MESSAGE_COUNT: int = 6  # 超过此条数触发自动摘要
+    MAX_LLM_CONTEXT_CHARS: int = 30000  # 生成阶段检索上下文总字符上限（避免大表查询 token 膨胀）
+
     REDIS_URL: str = "redis://localhost:6379/0"
 
     # ==================== Neo4j 知识图谱配置 ====================

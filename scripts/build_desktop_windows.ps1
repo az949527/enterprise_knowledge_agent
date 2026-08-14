@@ -17,10 +17,11 @@ if ($Version.Trim() -ne "3.11") {
 }
 
 Write-Host "Installing build dependency..."
+$Deps = & $VenvPython scripts/requirements_sections.py build
 & $VenvPython -m pip install `
   --progress-bar on `
   --index-url $IndexUrl `
-  -r requirements-desktop-build.txt
+  @Deps
 
 $ReleaseRoot = Join-Path $Root "outputs\releases"
 $WindowsDist = Join-Path $ReleaseRoot "windows"
@@ -54,6 +55,8 @@ Write-Host "Building Windows desktop release..."
   --workpath $BuildRoot `
   --specpath $SpecRoot `
   --paths $Root `
+  --hidden-import aiosqlite `
+  --hidden-import sqlalchemy.dialects.sqlite.aiosqlite `
   scripts\run_desktop.py
 
 $AppDir = Join-Path $WindowsDist "LocalKnowledgeTool"

@@ -27,12 +27,13 @@ Write-Host "Qt Essentials download is approximately 75 MB."
 Write-Host "Package index: $IndexUrl"
 Write-Host ""
 
+$Deps = & $VenvPython scripts/requirements_sections.py desktop
 & $VenvPython -m pip install `
   --progress-bar on `
   --timeout 120 `
   --retries 5 `
   --index-url $IndexUrl `
-  -r requirements-desktop.txt
+  @Deps
 
 Write-Host ""
 Write-Host "Desktop dependencies installed."

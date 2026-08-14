@@ -61,6 +61,7 @@ class ParentContextResolver:
             return sources
         shard_map = self._document_shard_map()
         total = 0
+        seen_parents: set[tuple[str, str]] = set()
         for source in sources:
             parent = self._parent_for(source, shard_map)
             if parent is None:
@@ -71,6 +72,13 @@ class ParentContextResolver:
                 continue
             if _same_trimmed(text, str(source.get("content") or "")):
                 continue
+            document_id = str(source.get("document_id") or "")
+            parent_id = str(source.get("parent_id") or "")
+            parent_key = (document_id, parent_id)
+            # 同一父只附加一次：多个命中 chunk 同属一个父时不重复带入整段父内容。
+            if parent_key in seen_parents:
+                continue
+            seen_parents.add(parent_key)
             text = _truncate(text, self._max_parent_chars)
             if total + len(text) > self._max_total_chars:
                 continue

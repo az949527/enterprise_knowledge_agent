@@ -5,7 +5,7 @@ from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from openpyxl import Workbook
 
@@ -109,6 +109,49 @@ class ExcelQueryPlanningTests(unittest.TestCase):
             {source["filename"] for source in result["retrieved_sources"]},
             {"20230526.xlsx", "final_df.xlsx"},
         )
+
+    def test_excel_content_summary_covers_each_workbook(self) -> None:
+        """用户报告回归：上传两个 Excel 问"excel里面什么内容"只回答一个。"""
+        result = asyncio.run(self._query("excel里面什么内容"))
+
+        self.assertEqual(
+            {source["filename"] for source in result["retrieved_sources"]},
+            {"20230526.xlsx", "final_df.xlsx"},
+        )
+        self.assertIn("20230526.xlsx", result["answer"])
+        self.assertIn("final_df.xlsx", result["answer"])
+
+    def test_excel_main_content_summary_covers_each_workbook(self) -> None:
+        """"excel里面主要讲了什么"应同样走多文档概览，覆盖每个 Excel。"""
+        result = asyncio.run(self._query("excel里面主要讲了什么"))
+
+        self.assertEqual(
+            {source["filename"] for source in result["retrieved_sources"]},
+            {"20230526.xlsx", "final_df.xlsx"},
+        )
+        self.assertIn("20230526.xlsx", result["answer"])
+        self.assertIn("final_df.xlsx", result["answer"])
+
+    def test_summary_falls_back_to_structured_when_llm_empty(self) -> None:
+        """用户报告回归：概览查询 LLM 返回空/失败时，回退结构化摘要，
+        不应出现"没有回答"只有引用来源。"""
+        with patch(
+            "app.lite.desktop_query.answer_query",
+            new=AsyncMock(
+                return_value={
+                    "answer": "",
+                    "mode": "llm_error",
+                    "llm": {"enabled": True, "usage": None},
+                }
+            ),
+        ):
+            result = asyncio.run(
+                self._query("excel里面什么内容", use_llm=True)
+            )
+
+        self.assertEqual(result["mode"], "local_fallback")
+        self.assertIn("20230526.xlsx", result["answer"])
+        self.assertIn("final_df.xlsx", result["answer"])
 
     def test_filename_summary_scopes_to_matching_workbook(self) -> None:
         result = asyncio.run(self._query("20230526.xlsx 有什么？"))

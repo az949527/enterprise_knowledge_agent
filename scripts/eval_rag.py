@@ -431,7 +431,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate end-to-end RAG answers against a JSON dataset.")
-    parser.add_argument("--dataset", default="evals/eval_dataset.json")
+    parser.add_argument("--dataset", default="", help="评估数据集 JSON 路径（必填）")
     parser.add_argument("--top-k", type=int, default=settings.TOP_K_RETRIEVAL)
     parser.add_argument("--candidate-k", type=int, default=settings.RERANK_CANDIDATE_K)
     parser.add_argument("--output-dir", default="outputs/evals")

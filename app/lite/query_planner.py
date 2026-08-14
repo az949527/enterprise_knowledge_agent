@@ -33,12 +33,18 @@ _STRONG_COMPUTATION_MARKERS = (
 _WEAK_COMPUTATION_MARKERS = MAX_MARKERS + MIN_MARKERS
 
 COUNT_MARKERS = ("几个", "多少个", "几份", "数量", "how many")
-LIST_MARKERS = ("有哪些文件", "有什么文件", "文件列表", "列出", "都有哪些")
+LIST_MARKERS = ("有哪些文件", "有什么文件", "文件列表", "列出", "都有哪些", "有哪些")
 SUMMARY_MARKERS = (
     "有什么",
     "包含什么",
     "有哪些内容",
     "主要内容",
+    "什么内容",
+    "主要讲了什么",
+    "讲了什么",
+    "讲什么",
+    "说了什么",
+    "哪些列",
     "字段",
     "列名",
     "概览",

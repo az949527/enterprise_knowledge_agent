@@ -1,341 +1,475 @@
-const filePicker = document.querySelector("#filePicker");
-const folderPicker = document.querySelector("#folderPicker");
-const queryBtn = document.querySelector("#queryBtn");
+/* P1-3 Chat & Memory — Frontend */
+
+// ===== DOM refs =====
+const convList = document.querySelector("#convList");
+const convSearch = document.querySelector("#convSearch");
+const newConvBtn = document.querySelector("#newConvBtn");
+const convTitle = document.querySelector("#convTitle");
+const messagesArea = document.querySelector("#messagesArea");
 const queryInput = document.querySelector("#queryInput");
 const useLlmInput = document.querySelector("#useLlm");
-const answerBox = document.querySelector("#answerBox");
-const sourcesList = document.querySelector("#sourcesList");
-const indexResult = document.querySelector("#indexResult");
-const selectedFiles = document.querySelector("#selectedFiles");
+const sendBtn = document.querySelector("#sendBtn");
 const statusEl = document.querySelector("#status");
+const settingsPanel = document.querySelector("#settingsPanel");
+const documentsPanel = document.querySelector("#documentsPanel");
+const settingsBtn = document.querySelector("#settingsBtn");
+const docsBtn = document.querySelector("#docsBtn");
 const apiKeyInput = document.querySelector("#apiKeyInput");
 const baseUrlInput = document.querySelector("#baseUrlInput");
 const modelInput = document.querySelector("#modelInput");
 const documentsList = document.querySelector("#documentsList");
+const selectedFiles = document.querySelector("#selectedFiles");
+const filePicker = document.querySelector("#filePicker");
+const folderPicker = document.querySelector("#folderPicker");
+
+// ===== State =====
+let currentConvId = null;
+let conversations = [];
 let pendingFiles = [];
 let indexReady = false;
-queryBtn.disabled = true;
+let isSending = false;
 
 const settingsStoreKey = "liteKnowledgeSettings";
+const defaultModel = "deepseek-v4-flash";
 
-async function parseResponse(response) {
-  if (response.ok) return response.json();
-  let detail = response.statusText;
-  try {
-    const payload = await response.json();
-    detail = payload.detail || JSON.stringify(payload);
-  } catch {
-    detail = await response.text();
-  }
-  throw new Error(detail || `HTTP ${response.status}`);
+// ===== Settings =====
+function normalizeModel(value) {
+  const model = String(value || "").trim();
+  return model || defaultModel;
 }
-
-function setStatus(message, type = "") {
-  statusEl.textContent = message;
-  statusEl.className = type;
-}
-
 function loadSettings() {
   let saved = {};
-  try {
-    saved = JSON.parse(localStorage.getItem(settingsStoreKey) || "{}");
-  } catch {
-    saved = {};
-  }
+  try { saved = JSON.parse(localStorage.getItem(settingsStoreKey) || "{}"); } catch { saved = {}; }
   apiKeyInput.value = saved.apiKey || "";
   baseUrlInput.value = saved.baseUrl || "https://api.deepseek.com";
-  modelInput.value = saved.model || "deepseek-v4-flash";
+  modelInput.value = normalizeModel(saved.model || defaultModel);
 }
-
 function saveSettings() {
   localStorage.setItem(settingsStoreKey, JSON.stringify({
     apiKey: apiKeyInput.value.trim(),
     baseUrl: baseUrlInput.value.trim(),
-    model: modelInput.value.trim(),
+    model: normalizeModel(modelInput.value),
   }));
+  modelInput.value = normalizeModel(modelInput.value);
+}
+loadSettings();
+apiKeyInput.addEventListener("change", saveSettings);
+baseUrlInput.addEventListener("change", saveSettings);
+modelInput.addEventListener("change", saveSettings);
+
+// ===== API helpers =====
+async function parseResponse(response) {
+  if (response.ok) return response.json();
+  let detail = response.statusText;
+  try { const payload = await response.json(); detail = payload.detail || JSON.stringify(payload); } catch { detail = await response.text(); }
+  throw new Error(detail || `HTTP ${response.status}`);
 }
 
-async function buildIndexFromCurrentFiles() {
-  if (!pendingFiles.length) {
-    setStatus("请先选择文档。", "error");
-    return;
-  }
-
-  setControlsDisabled(true);
-  setStatus("正在读取并构建索引...");
+// ===== Index helpers =====
+async function loadIndexStatus() {
   try {
-    const response = await buildIndexFromFiles(pendingFiles);
+    const resp = await fetch("/api/lite/status");
+    const payload = await parseResponse(resp);
+    indexReady = Boolean(payload.ready);
+    if (indexReady) {
+      renderDocuments(payload.documents || []);
+    } else {
+      renderDocuments([]);
+      setStatus("请添加文档后开始提问");
+    }
+    updateSendState();
+  } catch (error) {
+    indexReady = false;
+    setStatus(error.message, "error");
+  }
+}
+async function buildIndexFromCurrentFiles() {
+  if (!pendingFiles.length) { setStatus("请先选择文档", "error"); return; }
+  setStatus("正在构建索引…");
+  try {
+    const form = new FormData();
+    for (const f of pendingFiles) form.append("files", f, f.webkitRelativePath || f.name);
+    const response = await fetch("/api/lite/index/upload", { method: "POST", body: form });
     const payload = await parseResponse(response);
-    const skippedText = payload.skipped_count ? `，跳过重复 ${payload.skipped_count} 个：${payload.skipped_files.join("、")}` : "";
-    indexResult.textContent = `${payload.file_count} 个文件，${payload.chunk_count} 个片段 -> ${payload.index_dir}${skippedText}`;
     indexReady = payload.chunk_count > 0;
     pendingFiles = [];
     updateSelectedFiles();
     renderDocuments(payload.documents || []);
-    setStatus(indexReady ? `索引已更新，新增 ${payload.added_count || 0} 个文件${skippedText}` : "没有可索引内容", indexReady ? "ok" : "error");
+    setStatus(indexReady ? "索引已更新" : "没有可索引内容", indexReady ? "ok" : "error");
   } catch (error) {
     indexReady = false;
     setStatus(error.message, "error");
-  } finally {
-    setControlsDisabled(false);
   }
 }
-
-async function loadIndexStatus() {
+async function deleteDocument(filename) {
+  if (!filename || !window.confirm(`删除 "${filename}"？`)) return;
   try {
-    const response = await fetch("/api/lite/status");
-    const payload = await parseResponse(response);
-    indexReady = Boolean(payload.ready);
-    if (indexReady) {
-      indexResult.textContent = `${payload.file_count} 个文件，${payload.chunk_count} 个片段 -> ${payload.index_dir}`;
-      renderDocuments(payload.documents || []);
-      setStatus("已有索引，可以提问", "ok");
-    } else {
-      renderDocuments([]);
-      setStatus("请选择文件或文件夹");
-    }
-  } catch (error) {
-    indexReady = false;
-    setStatus(error.message, "error");
-  } finally {
-    setControlsDisabled(false);
-  }
+    const resp = await fetch(`/api/lite/documents?filename=${encodeURIComponent(filename)}`, { method: "DELETE" });
+    const payload = await parseResponse(resp);
+    indexReady = payload.chunk_count > 0;
+    renderDocuments(payload.documents || []);
+    setStatus("已删除", "ok");
+  } catch (error) { setStatus(error.message, "error"); }
+}
+function addSelectedFiles(fileList) {
+  const next = [...fileList].filter(f => /\.(txt|md|pdf|csv|xlsx)$/i.test(f.name));
+  const byKey = new Map(pendingFiles.map(f => [fileKey(f), f]));
+  for (const f of next) byKey.set(fileKey(f), f);
+  pendingFiles = [...byKey.values()];
+  updateSelectedFiles();
+  filePicker.value = "";
+  folderPicker.value = "";
+  if (pendingFiles.length) buildIndexFromCurrentFiles();
+}
+function fileKey(file) { return `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`; }
+function updateSelectedFiles() {
+  if (!pendingFiles.length) { selectedFiles.textContent = "选择文档后自动构建索引"; return; }
+  const names = pendingFiles.slice(0, 3).map(f => f.webkitRelativePath || f.name);
+  selectedFiles.textContent = `${names.join("、")} 等 ${pendingFiles.length} 个文档`;
 }
 
-function setControlsDisabled(disabled) {
-  filePicker.disabled = disabled;
-  folderPicker.disabled = disabled;
-  queryBtn.disabled = disabled || !indexReady;
+// ===== Conversation API =====
+async function loadConversations() {
+  try {
+    const resp = await fetch("/api/lite/conversations");
+    const data = await parseResponse(resp);
+    conversations = data.conversations || [];
+    renderConversations();
+  } catch (e) { setStatus("加载会话失败: " + e.message, "error"); }
 }
-
-async function buildIndexFromFiles(files) {
-  const form = new FormData();
-  for (const file of files) {
-    form.append("files", file, file.webkitRelativePath || file.name);
-  }
-  return fetch("/api/lite/index/upload", {
-    method: "POST",
-    body: form,
-  });
-}
-
-async function queryKnowledge() {
-  const query = queryInput.value.trim();
-  if (!indexReady) {
-    setStatus("请先选择文件或文件夹，系统会自动构建索引。", "error");
+function renderConversations() {
+  const kw = (convSearch.value || "").toLowerCase();
+  const filtered = kw ? conversations.filter(c => c.title.toLowerCase().includes(kw)) : conversations;
+  convList.replaceChildren();
+  if (!filtered.length) {
+    const empty = document.createElement("div");
+    empty.className = "messages-empty";
+    empty.style.fontSize = "13px";
+    empty.textContent = kw ? "无匹配对话" : "暂无对话";
+    convList.appendChild(empty);
     return;
   }
-  if (!query) {
-    setStatus("请输入问题。", "error");
-    return;
+  for (const c of filtered) {
+    const item = document.createElement("div");
+    item.className = "conversation-item" + (c.id === currentConvId ? " active" : "");
+    item.addEventListener("click", (e) => {
+      if (e.target.closest(".conv-delete")) return;
+      selectConversation(c.id);
+    });
+
+    const title = document.createElement("span");
+    title.className = "conv-title";
+    title.textContent = c.title || "新对话";
+
+    const meta = document.createElement("span");
+    meta.className = "conv-meta";
+    meta.textContent = c.message_count || "";
+
+    const del = document.createElement("button");
+    del.className = "conv-delete";
+    del.textContent = "×";
+    del.title = "删除";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteConversation(c.id);
+    });
+
+    item.appendChild(title);
+    item.appendChild(meta);
+    item.appendChild(del);
+    convList.appendChild(item);
   }
-
-  queryBtn.disabled = true;
-  answerBox.textContent = "正在检索...";
-  sourcesList.innerHTML = "";
-  setStatus("正在查询...");
-
+}
+async function createConversation() {
   try {
-    const response = await fetch("/api/lite/query", {
+    const resp = await fetch("/api/lite/conversations", {
       method: "POST",
-      headers: {"Content-Type": "application/json"},
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "新对话" }),
+    });
+    const conv = await parseResponse(resp);
+    conversations.unshift(conv);
+    renderConversations();
+    selectConversation(conv.id);
+  } catch (e) { setStatus("创建失败: " + e.message, "error"); }
+}
+async function selectConversation(convId) {
+  currentConvId = convId;
+  convTitle.textContent = conversations.find(c => c.id === convId)?.title || "新对话";
+  renderConversations();
+  // 加载消息
+  try {
+    const resp = await fetch(`/api/lite/conversations/${convId}`);
+    const data = await parseResponse(resp);
+    renderMessages(data.messages || []);
+    updateSendState();
+  } catch (e) {
+    messagesArea.replaceChildren();
+    const err = document.createElement("div"); err.className = "messages-empty"; err.textContent = "加载失败";
+    messagesArea.appendChild(err);
+  }
+}
+async function deleteConversation(convId) {
+  if (!window.confirm("删除此对话？")) return;
+  try {
+    await fetch(`/api/lite/conversations/${convId}`, { method: "DELETE" });
+    conversations = conversations.filter(c => c.id !== convId);
+    if (currentConvId === convId) {
+      currentConvId = null;
+      convTitle.textContent = "新对话";
+      messagesArea.replaceChildren();
+      const empty = document.createElement("div"); empty.className = "messages-empty"; empty.textContent = "选择或创建对话开始提问";
+      messagesArea.appendChild(empty);
+      updateSendState();
+    }
+    renderConversations();
+  } catch (e) { setStatus("删除失败: " + e.message, "error"); }
+}
+
+// ===== Messages =====
+function renderMessages(messages) {
+  messagesArea.replaceChildren();
+  if (!messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "messages-empty";
+    empty.textContent = "开始新对话";
+    messagesArea.appendChild(empty);
+    return;
+  }
+  for (const msg of messages) {
+    const row = document.createElement("div");
+    row.className = "message-row " + msg.role;
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+
+    if (msg.role === "user") {
+      if (msg.rewritten_query && msg.original_query !== msg.rewritten_query) {
+        const rewrite = document.createElement("div");
+        rewrite.className = "bubble-rewrite";
+        rewrite.textContent = "改写: " + msg.rewritten_query;
+        bubble.appendChild(rewrite);
+      }
+      bubble.appendChild(document.createTextNode(msg.original_query || ""));
+    } else {
+      bubble.innerHTML = formatMarkdown(msg.answer || msg.error || "无回答");
+      // Meta
+      const meta = document.createElement("div");
+      meta.className = "bubble-meta";
+      if (msg.model) {
+        const m = document.createElement("span"); m.textContent = msg.model; meta.appendChild(m);
+      }
+      if (msg.token_usage) {
+        const t = document.createElement("span");
+        t.textContent = `${msg.token_usage.total_tokens || "?"} tokens`;
+        meta.appendChild(t);
+      }
+      if (msg.citations && msg.citations.length) {
+        const c = document.createElement("span");
+        c.textContent = `${msg.citations.length} 引用`;
+        c.className = "citation-link";
+        c.addEventListener("click", () => showCitations(msg.citations));
+        meta.appendChild(c);
+      }
+      if (meta.children.length) bubble.appendChild(meta);
+    }
+
+    row.appendChild(bubble);
+    messagesArea.appendChild(row);
+  }
+  messagesArea.scrollTop = messagesArea.scrollHeight;
+}
+
+function showCitations(citations) {
+  const parts = citations.map((s, i) => `[${i + 1}] ${s.filename || ""}:\n${(s.content || "").slice(0, 300)}`);
+  window.alert(parts.join("\n\n"));
+}
+
+function formatMarkdown(text) {
+  let html = String(text || "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Bold
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  // [N] citations as links
+  html = html.replace(/\[(\d+)\]/g, '<span class="citation-link" data-rank="$1">[$1]</span>');
+  // Line breaks
+  html = html.replace(/\n\n/g, "</p><p>").replace(/\n/g, "<br>");
+  return "<p>" + html + "</p>";
+}
+
+// ===== Send =====
+async function sendMessage() {
+  const query = queryInput.value.trim();
+  if (!query || isSending) return;
+  if (!currentConvId) {
+    await createConversation();
+  }
+  if (!currentConvId) return;
+
+  isSending = true;
+  queryInput.value = "";
+  updateSendState();
+
+  // Optimistic user message
+  appendUserBubble(query);
+  appendAssistantPlaceholder();
+
+  try {
+    const resp = await fetch(`/api/lite/conversations/${currentConvId}/query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         query,
         use_llm: useLlmInput.checked,
         top_k: 5,
         api_key: apiKeyInput.value.trim(),
         base_url: baseUrlInput.value.trim(),
-        model: modelInput.value.trim(),
+        model: normalizeModel(modelInput.value),
       }),
     });
-    const payload = await parseResponse(response);
-    const citedSources = payload.sources || [];
-    const retrievedSources = payload.retrieved_sources || [];
-    const filteredSources = filterSourcesByAnswer(payload.answer || "", citedSources, payload.mode);
-    const displaySources = payload.mode === "llm_error"
-      ? []
-      : (filteredSources.length ? filteredSources : retrievedSources);
-    answerBox.textContent = payload.answer || buildFallbackAnswer(displaySources);
-    try {
-      renderSources(displaySources);
-    } catch (renderError) {
-      sourcesList.textContent = `来源渲染失败：${renderError.message}`;
+    const payload = await parseResponse(resp);
+    // Replace placeholder
+    const placeholder = document.querySelector(".bubble-placeholder");
+    if (placeholder) {
+      const row = placeholder.closest(".message-row");
+      row.replaceChildren();
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.innerHTML = formatMarkdown(payload.answer || "");
+      // Meta
+      const meta = document.createElement("div");
+      meta.className = "bubble-meta";
+      const llm = payload.llm || {};
+      if (llm.model || llm.configured_model) {
+        const s = document.createElement("span");
+        s.textContent = llm.model || llm.configured_model;
+        meta.appendChild(s);
+      }
+      if (llm.usage) {
+        const s = document.createElement("span");
+        s.textContent = `${llm.usage.total_tokens || "?"} tokens`;
+        meta.appendChild(s);
+      }
+      if (payload.sources && payload.sources.length) {
+        const s = document.createElement("span");
+        s.textContent = `${payload.sources.length} 引用`;
+        s.className = "citation-link";
+        s.addEventListener("click", () => showCitations(payload.sources));
+        meta.appendChild(s);
+      }
+      if (meta.children.length) bubble.appendChild(meta);
+      row.appendChild(bubble);
+
+      // Rewrite indicator
+      if (payload.rewritten_query && payload.rewritten_query !== query) {
+        const rewrite = document.createElement("div");
+        rewrite.className = "bubble-rewrite";
+        rewrite.textContent = "已改写为: " + payload.rewritten_query;
+        bubble.insertBefore(rewrite, bubble.firstChild);
+      }
     }
-    const usage = payload.llm?.usage;
-    const usageText = usage?.total_tokens ? ` · ${usage.total_tokens} tokens` : "";
-    const isError = payload.mode === "llm_error";
-    setStatus(`${formatMode(payload.mode)} · 检索 ${retrievedSources.length} 条 / 展示 ${displaySources.length} 条${usageText}`, isError ? "error" : "ok");
-  } catch (error) {
-    if (!answerBox.textContent || answerBox.textContent === "正在检索...") {
-      answerBox.textContent = `查询失败：${error.message}`;
+    setStatus(`${formatMode(payload.mode)} · ${payload.retrieved_sources?.length || 0} 条检索`, payload.mode === "llm_error" ? "error" : "ok");
+    // Refresh conversation list
+    loadConversations();
+  } catch (e) {
+    setStatus(e.message, "error");
+    const placeholder = document.querySelector(".bubble-placeholder");
+    if (placeholder) {
+      placeholder.textContent = "发送失败: " + e.message;
+      placeholder.className = "bubble";
     }
-    setStatus(error.message, "error");
   } finally {
-    queryBtn.disabled = false;
+    isSending = false;
+    updateSendState();
   }
 }
 
+function appendUserBubble(text) {
+  const row = document.createElement("div");
+  row.className = "message-row user";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+  row.appendChild(bubble);
+  messagesArea.appendChild(row);
+  messagesArea.scrollTop = messagesArea.scrollHeight;
+}
+
+function appendAssistantPlaceholder() {
+  // Remove old placeholder
+  const old = messagesArea.querySelector(".bubble-placeholder");
+  if (old) old.closest(".message-row").remove();
+  const row = document.createElement("div");
+  row.className = "message-row assistant";
+  const bubble = document.createElement("div");
+  bubble.className = "bubble bubble-placeholder";
+  bubble.textContent = "正在检索…";
+  bubble.style.opacity = "0.6";
+  row.appendChild(bubble);
+  messagesArea.appendChild(row);
+  messagesArea.scrollTop = messagesArea.scrollHeight;
+}
+
+function updateSendState() {
+  const canSend = currentConvId && indexReady && !isSending;
+  sendBtn.disabled = !canSend;
+  queryInput.disabled = !currentConvId;
+}
+
+function formatMode(mode) {
+  const map = { llm: "LLM 汇总", llm_error: "LLM 错误", local_fallback: "本地检索", empty: "未检索到内容", structured: "结构化计算", mixed: "混合计算" };
+  return map[mode] || mode;
+}
+
+// ===== Document rendering =====
 function renderDocuments(documents) {
   documentsList.replaceChildren();
   if (!documents.length) {
     const empty = document.createElement("div");
-    empty.className = "meta";
-    empty.textContent = "尚未添加文档。";
+    empty.className = "meta"; empty.style.fontSize = "13px"; empty.style.padding = "4px";
+    empty.textContent = "暂无文档";
     documentsList.appendChild(empty);
     return;
   }
-
   for (const doc of documents) {
-    const item = document.createElement("article");
+    const item = document.createElement("div");
     item.className = "document-item";
-
-    const info = document.createElement("div");
-    info.className = "document-info";
     const name = document.createElement("strong");
-    name.textContent = doc.filename || "未知文件";
+    name.textContent = doc.filename || "未知";
     const meta = document.createElement("span");
-    meta.textContent = `${doc.chunk_count || 0} 个片段，${doc.content_chars || 0} 字符`;
-    info.appendChild(name);
-    info.appendChild(meta);
-
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "danger";
-    button.textContent = "删除";
-    button.addEventListener("click", () => deleteDocument(doc.filename));
-
-    item.appendChild(info);
-    item.appendChild(button);
+    meta.textContent = `${doc.chunk_count || 0} 片段`;
+    const del = document.createElement("button");
+    del.textContent = "删除";
+    del.addEventListener("click", () => deleteDocument(doc.filename));
+    item.appendChild(name);
+    item.appendChild(meta);
+    item.appendChild(del);
     documentsList.appendChild(item);
   }
 }
 
-async function deleteDocument(filename) {
-  if (!filename) return;
-  const confirmed = window.confirm(`删除“${filename}”及其索引？`);
-  if (!confirmed) return;
+// ===== UI toggles =====
+settingsBtn.addEventListener("click", () => settingsPanel.classList.toggle("visible"));
+docsBtn.addEventListener("click", () => documentsPanel.classList.toggle("visible"));
+newConvBtn.addEventListener("click", createConversation);
+convSearch.addEventListener("input", renderConversations);
 
-  setStatus("正在删除...");
-  try {
-    const response = await fetch(`/api/lite/documents?filename=${encodeURIComponent(filename)}`, {
-      method: "DELETE",
-    });
-    const payload = await parseResponse(response);
-    indexReady = payload.chunk_count > 0;
-    indexResult.textContent = `${payload.file_count} 个文件，${payload.chunk_count} 个片段 -> ${payload.index_dir}`;
-    renderDocuments(payload.documents || []);
-    renderSources([]);
-    answerBox.textContent = indexReady ? "文档已删除，可以继续提问。" : "文档已删除，当前没有可查询索引。";
-    setStatus("已删除文档并更新索引", "ok");
-    setControlsDisabled(false);
-  } catch (error) {
-    setStatus(error.message, "error");
-  }
-}
-
-function renderSources(sources) {
-  sourcesList.replaceChildren();
-  if (!sources.length) {
-    const empty = document.createElement("div");
-    empty.className = "source";
-    empty.textContent = "没有引用来源。";
-    sourcesList.appendChild(empty);
-    return;
-  }
-
-  for (const source of sources) {
-    const article = document.createElement("article");
-    article.className = "source";
-
-    const meta = document.createElement("div");
-    meta.className = "source-meta";
-    const filename = document.createElement("span");
-    filename.textContent = source.filename || "未知文件";
-    meta.appendChild(filename);
-
-    const content = document.createElement("div");
-    content.className = "source-content";
-    content.textContent = source.content || "";
-
-    article.appendChild(meta);
-    article.appendChild(content);
-    sourcesList.appendChild(article);
-  }
-}
-
-function buildFallbackAnswer(sources) {
-  const lines = (sources || [])
-    .map((source, index) => {
-      const text = String(source.content || "").replace(/\s+/g, " ").trim();
-      return text ? `${text.slice(0, 260)} [${index + 1}]` : "";
-    })
-    .filter(Boolean);
-  return lines.length ? lines.join("\n") : "没有返回答案。";
-}
-
-function filterSourcesByAnswer(answer, sources, mode = "") {
-  const cited = [...String(answer).matchAll(/\[(\d+)\]/g)]
-    .map((match) => Number.parseInt(match[1], 10))
-    .filter((rank, index, ranks) => Number.isInteger(rank) && rank >= 1 && ranks.indexOf(rank) === index);
-  if (mode === "llm" && !cited.length && String(answer).includes("资料不足")) return [];
-  if (!cited.length) return sources;
-  const byRank = new Map(sources.map((source) => [Number(source.rank), source]));
-  const filtered = cited.map((rank) => byRank.get(rank)).filter(Boolean);
-  return filtered.length ? filtered : sources;
-}
-
-function updateSelectedFiles() {
-  if (!pendingFiles.length) {
-    selectedFiles.textContent = "尚未选择文档。可选择 `.txt`、`.md`、`.pdf` 文件或文件夹。";
-    return;
-  }
-  const names = pendingFiles.slice(0, 5).map((file) => file.webkitRelativePath || file.name);
-  const suffix = pendingFiles.length > 5 ? ` 等 ${pendingFiles.length} 个文档` : `，共 ${pendingFiles.length} 个文档`;
-  selectedFiles.textContent = `已选择：${names.join("、")}${suffix}`;
-}
-
-function addSelectedFiles(fileList) {
-  const nextFiles = [...fileList].filter((file) => /\.(txt|md|pdf)$/i.test(file.name));
-  const byKey = new Map(pendingFiles.map((file) => [fileKey(file), file]));
-  for (const file of nextFiles) {
-    byKey.set(fileKey(file), file);
-  }
-  pendingFiles = [...byKey.values()];
-  updateSelectedFiles();
-  filePicker.value = "";
-  folderPicker.value = "";
-  if (pendingFiles.length) {
-    buildIndexFromCurrentFiles();
-  }
-}
-
-function fileKey(file) {
-  return `${file.webkitRelativePath || file.name}:${file.size}:${file.lastModified}`;
-}
-
-function formatMode(mode) {
-  if (mode === "llm") return "LLM 汇总";
-  if (mode === "llm_error") return "LLM 配置或请求失败";
-  if (mode === "local_fallback") return "本地检索";
-  if (mode === "empty") return "未检索到内容";
-  return mode || "完成";
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-queryBtn.addEventListener("click", queryKnowledge);
+// ===== Events =====
+sendBtn.addEventListener("click", sendMessage);
+queryInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
 filePicker.addEventListener("change", () => addSelectedFiles(filePicker.files));
 folderPicker.addEventListener("change", () => addSelectedFiles(folderPicker.files));
-apiKeyInput.addEventListener("change", saveSettings);
-baseUrlInput.addEventListener("change", saveSettings);
-modelInput.addEventListener("change", saveSettings);
 
-loadSettings();
+// ===== Status =====
+function setStatus(msg, type) {
+  statusEl.textContent = msg;
+  statusEl.className = type || "";
+}
+
+// ===== Init =====
 loadIndexStatus();
+loadConversations();

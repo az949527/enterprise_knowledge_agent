@@ -180,6 +180,12 @@ def iter_pdf_document_nodes(
                 yield pending_table
             pending_table = None
 
+        # 元数据契约：第一个节点携带 PDF 完整页数（本地 manifest 用，不参与检索）。
+        if page_index == 0 and page_nodes:
+            page_nodes[0].metadata.setdefault(
+                "document_statistics",
+                {"page_count": len(document)},
+            )
         if (
             page_nodes
             and page_nodes[-1].node_type is NodeType.TABLE

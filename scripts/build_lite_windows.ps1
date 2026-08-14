@@ -11,7 +11,8 @@ if ($Version.Trim() -ne "3.11") {
   throw "Lite build requires Python 3.11. Current version: $Version"
 }
 
-& $VenvPython -m pip install -r requirements-lite.txt
+$Deps = & $VenvPython scripts/requirements_sections.py server build
+& $VenvPython -m pip install @Deps
 
 & $VenvPython -m PyInstaller `
   --name LocalKnowledgeTool `

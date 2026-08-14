@@ -6,7 +6,7 @@ from typing import Any
 
 from app.core.config import settings
 from app.lite.bm25_search import search_bm25_index
-from app.lite.generator import answer_query
+from app.lite.generator import answer_query, extractive_answer
 from app.lite.indexer import chunk_structure, list_index_documents, read_chunks
 from app.lite.parent_context import ParentContextResolver
 from app.lite.structured_query import run_structured_computation
@@ -24,6 +24,67 @@ from app.lite.retrieval_cache import (
     get_cached_retrieval,
     set_cached_retrieval,
 )
+
+_CLARIFY_HISTORY_MARKERS = (
+    "请指定",
+    "请说明",
+    "请选择",
+    "检测到文件内多个",
+    "不明确",
+    "无法确定",
+    "请补充",
+)
+_QUESTION_WORDS = ("？", "?", "什么", "如何", "怎么", "为什么", "多少", "哪", "请", "分别", "几")
+
+
+def _resolve_clarification_followup(
+    query: str,
+    conversation_history: list[dict[str, str]] | None,
+) -> str:
+    """用户回答上一轮澄清追问时（如输入"sheet1"），组合成完整查询。
+
+    多级澄清场景：
+    历史 = [用户:"sheet有几行", 助手:"…请指定哪个 Sheet…",
+            用户:"sheet1", 助手:"…请指定哪个文件…"]，当前输入"动态因子"
+    → 返回"sheet有几行 sheet1 动态因子"，让计算路由按指定 Sheet+文件重算。
+    """
+    query = (query or "").strip()
+    if not query or not conversation_history:
+        return query
+    # 只处理简短、非疑问的澄清回应（如 sheet 名、文件名）
+    if len(query) > 15 or any(word in query for word in _QUESTION_WORDS):
+        return query
+    # 历史最后一条 assistant 是否为澄清追问
+    last_assistant = next(
+        (
+            message
+            for message in reversed(conversation_history)
+            if message.get("role") == "assistant"
+        ),
+        None,
+    )
+    if not last_assistant:
+        return query
+    clarify_text = str(last_assistant.get("content") or "")
+    if not any(marker in clarify_text for marker in _CLARIFY_HISTORY_MARKERS):
+        return query
+    # 找到最近的原始完整问题（含疑问词或较长），并收集其后的所有澄清回应。
+    original = ""
+    followups: list[str] = []
+    for message in conversation_history:
+        if message.get("role") != "user":
+            continue
+        content = str(message.get("content") or "").strip()
+        if not content:
+            continue
+        if any(word in content for word in _QUESTION_WORDS) or len(content) > 15:
+            original = content
+            followups = []
+        elif original:
+            followups.append(content)
+    if not original:
+        return query
+    return " ".join([original] + followups + [query])
 
 
 async def query_desktop_index(
@@ -43,6 +104,7 @@ async def query_desktop_index(
     reranker_model: str = DEFAULT_RERANKER_MODEL,
     offline: bool = False,
     use_parent_context: bool = settings.PARENT_CONTEXT_ENABLED,
+    conversation_history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     # 完全离线模式：强制本地检索与本地答案，不发起任何远程请求。
     # 用户仍可获得基于本地索引的抽取式回答，而不是被拦截报错。
@@ -50,6 +112,9 @@ async def query_desktop_index(
         use_llm = False
         use_embedding = False
         use_reranker = False
+    # 澄清回应补全：用户回答上一轮"请指定哪个 Sheet"时（如输入"sheet1"），
+    # 把当前简短输入和最近一次用户问题组合，避免被当作独立查询而"资料不足"。
+    query = _resolve_clarification_followup(query, conversation_history)
     documents = list_index_documents(index_dir)
     query_plan = plan_query(query, documents)
     if query_plan.is_structured_inventory:
@@ -67,12 +132,40 @@ async def query_desktop_index(
                 "按文件名分别回答，每个已提供文件单独列出，"
                 "优先说明 Sheet、字段和数据范围，不得省略文件。"
             ),
+            conversation_history=conversation_history,
         )
+        text = str(answer["answer"] or "").strip()
+        # 兜底：LLM 失败或返回空时，用结构化摘要保证"excel讲了什么"总有回答。
+        if answer["mode"] in ("llm_error", "empty") or not text:
+            fallback_text = extractive_answer(sources)
+            return {
+                "answer": fallback_text,
+                "mode": "local_fallback",
+                "sources": filter_sources_by_answer(
+                    fallback_text,
+                    sources,
+                    "local_fallback",
+                ),
+                "retrieved_sources": sources,
+                "llm": answer.get("llm"),
+                "retrieval": {
+                    "mode": "summary",
+                    "services_used": _retrieval_services_used(
+                        use_llm, False, False, bool(use_llm)
+                    ),
+                    "embedding": False,
+                    "reranker": False,
+                    "cache_hit": False,
+                    "offline": offline,
+                    "remote": bool(use_llm),
+                    "query_plan": query_plan.cache_parameters(),
+                },
+            }
         return {
-            "answer": answer["answer"],
+            "answer": text,
             "mode": answer["mode"],
             "sources": filter_sources_by_answer(
-                answer["answer"],
+                text,
                 sources,
                 answer["mode"],
             ),
@@ -238,6 +331,7 @@ async def query_desktop_index(
         api_key=llm_api_key,
         base_url=llm_base_url,
         model=llm_model,
+        conversation_history=conversation_history,
     )
     if answer["mode"] == "llm_error":
         return {
@@ -263,6 +357,10 @@ async def query_desktop_index(
         "retrieved_sources": sources,
         "llm": answer.get("llm"),
         "retrieval": {
+            "mode": retrieval_mode,
+            "services_used": _retrieval_services_used(
+                use_llm, use_embedding, use_reranker, remote_requested
+            ),
             "embedding": use_embedding,
             "reranker": use_reranker,
             "cache_hit": cache_hit,
@@ -271,6 +369,22 @@ async def query_desktop_index(
             "query_plan": query_plan.cache_parameters(),
         },
     }
+
+
+def _retrieval_services_used(
+    use_llm: bool,
+    use_embedding: bool,
+    use_reranker: bool,
+    remote_requested: bool,
+) -> list[str]:
+    services = []
+    if use_llm and remote_requested:
+        services.append("llm")
+    if use_embedding:
+        services.append("embedding")
+    if use_reranker:
+        services.append("reranker")
+    return services
 
 
 def _inventory_result(
@@ -323,6 +437,8 @@ def _inventory_result(
         "retrieved_sources": sources,
         "llm": {"enabled": False, "usage": None},
         "retrieval": {
+            "mode": "inventory",
+            "services_used": [],
             "embedding": False,
             "reranker": False,
             "cache_hit": False,
@@ -376,6 +492,8 @@ async def _structured_computation_result(
         "retrieved_sources": sources,
         "llm": {"enabled": False, "usage": None},
         "retrieval": {
+            "mode": "structured",
+            "services_used": [],
             "embedding": False,
             "reranker": False,
             "cache_hit": False,
@@ -485,6 +603,10 @@ async def _mixed_computation_result(
         "retrieved_sources": comp_sources + doc_sources,
         "llm": doc_answer.get("llm"),
         "retrieval": {
+            "mode": "mixed",
+            "services_used": _retrieval_services_used(
+                use_llm, False, False, bool(use_llm)
+            ),
             "embedding": False,
             "reranker": False,
             "cache_hit": False,

@@ -28,13 +28,19 @@ async def _llm_call(
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        timeout=30,
-    )
-    return (response.choices[0].message.content or "").strip()
+    try:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            timeout=30,
+        )
+        return (response.choices[0].message.content or "").strip()
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
 
 
 async def resolve_column(

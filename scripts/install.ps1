@@ -23,12 +23,13 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
 }
 
 Write-Host "Installing backend dependencies..."
+$Deps = & $VenvPython scripts/requirements_sections.py server ml
 & $VenvPython -m pip install `
   --progress-bar on `
   --timeout 120 `
   --retries 5 `
   --index-url $IndexUrl `
-  -r requirements.txt
+  @Deps
 
 Write-Host ""
 Write-Host "Backend environment ready:"

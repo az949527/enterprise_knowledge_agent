@@ -4,7 +4,7 @@ import re
 from time import perf_counter
 from typing import Any
 
-from app.core.config import settings
+from app.core.config import normalize_llm_model, settings
 from app.core.logger import logger
 from app.security.redaction import redact_secrets
 from app.security.remote_access import remote_access_enabled
@@ -36,7 +36,12 @@ class RAGAnswerGenerator:
         context = _build_rag_context(chunks)
         if not chunks:
             return {
-                "answer": "当前知识库没有检索到足够相关的内容。",
+                "answer": (
+                    "知识库中没有检索到与您的问题直接相关的内容。\n\n"
+                    "您可以尝试：\n"
+                    "1. 换一种更明确的说法，或补充具体对象（如文档名、时间、数值条件）\n"
+                    "2. 如果内容不在知识库中，请先添加相关文档，再重新提问"
+                ),
                 "context": context,
                 "mode": "empty",
                 "strategy": "no_retrieved_chunks",
@@ -78,6 +83,7 @@ class RAGAnswerGenerator:
     async def _generate_with_llm(self, query: str, context: str) -> dict:
         prompt = ANSWER_PROMPT.format(query=query, context=context)
         started = perf_counter()
+        model = normalize_llm_model(settings.LLM_MODEL)
         if not remote_access_enabled():
             return {
                 "answer": "",
@@ -96,7 +102,7 @@ class RAGAnswerGenerator:
                 base_url=settings.LLM_BASE_URL,
             )
             response = await client.chat.completions.create(
-                model=settings.LLM_MODEL,
+                model=model,
                 messages=[
                     {
                         "role": "user",
@@ -191,7 +197,7 @@ def _llm_metadata(
     return {
         "enabled": bool(settings.LLM_API_KEY) if enabled is None else enabled,
         "base_url": settings.LLM_BASE_URL,
-        "configured_model": settings.LLM_MODEL,
+        "configured_model": normalize_llm_model(settings.LLM_MODEL),
         "response_model": response_model,
         "elapsed_ms": elapsed_ms,
         "prompt_chars": len(prompt),

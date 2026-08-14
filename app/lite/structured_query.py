@@ -148,7 +148,9 @@ def extract_computation_spec(
         }
         if multi_sheet_files:
             names = "、".join(
-                sorted(per_file[path] for path in sorted(multi_sheet_files))
+                sheet
+                for path in sorted(multi_sheet_files)
+                for sheet in sorted(per_file[path])
             )
             return _clarify(
                 f"检测到文件内多个 Sheet（{names}），请指定要对哪个 Sheet 计算。"
@@ -158,6 +160,25 @@ def extract_computation_spec(
             (sheet["sheet"] for sheet in sheets if sheet.get("sheet")),
             None,
         )
+
+    # 多文件同名 Sheet：用户指定 sheet 后仍需澄清文件，避免跨文件合并计算。
+    # 但显式跨文件意图（所有/全部/分别/各自）应保持合并，不澄清。
+    if sheet_name and not any(
+        marker in normalized for marker in CROSS_FILE_MARKERS
+    ):
+        sheet_paths = sorted(
+            {
+                sheet["source_path"]
+                for sheet in sheets
+                if sheet.get("sheet") == sheet_name
+            }
+        )
+        if len(sheet_paths) > 1:
+            names = "、".join(str(Path(path).name) for path in sheet_paths)
+            return _clarify(
+                f"多个文件都有 Sheet「{sheet_name}」（{names}），"
+                "请指定要对哪个文件计算。"
+            )
 
     # 字段白名单：取目标 Sheet 的列。
     whitelist = _columns_for_sheet(sheets, sheet_name)
@@ -466,9 +487,32 @@ def _target_source_paths(
     if source_paths:
         selected = [path for path in source_paths if path in all_tabular]
         return selected or all_tabular
+    # 查询点名文件名/简称（如"动态因子"匹配"动态因子模型_data.xlsx"）
+    named = [path for path in all_tabular if _source_path_mentioned_in(query, path)]
+    if named:
+        return named
     if any(marker in query for marker in CROSS_FILE_MARKERS):
         return all_tabular
     return all_tabular
+
+
+def _source_path_mentioned_in(query: str, source_path: str) -> bool:
+    """查询是否点名了该文件（支持文件名简称子串匹配）。"""
+    stem = Path(str(source_path)).stem
+    compact_stem = re.sub(r"[\s._\-\\/]+", "", stem.casefold())
+    compact_query = re.sub(
+        r"[\s._\-\\/：:（）()\[\]【】]+", "", query.casefold()
+    )
+    if not compact_stem or not compact_query:
+        return False
+    if compact_stem in compact_query:
+        return True
+    # 简称：文件名的任意连续 ≥2 字符子串命中查询（"动态因子"→"动态因子模型_data"）
+    for length in range(2, min(len(compact_stem), 20) + 1):
+        for start in range(len(compact_stem) - length + 1):
+            if compact_stem[start : start + length] in compact_query:
+                return True
+    return False
 
 
 def _sheet_summaries(
@@ -503,9 +547,10 @@ def _sheet_summaries(
 def _pick_sheet_name(query: str, sheets: list[dict[str, Any]]) -> Optional[str]:
     if not sheets:
         return None
+    query_lower = query.casefold()
     candidates = {sheet["sheet"] for sheet in sheets if sheet.get("sheet")}
     for name in candidates:
-        if name and name in query:
+        if name and name.casefold() in query_lower:
             return name
     return None
 
