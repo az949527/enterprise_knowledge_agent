@@ -65,7 +65,13 @@ jobs:
 
       - name: Build Windows application
         shell: pwsh
-        run: .\scripts\build_desktop_windows.ps1 -IndexUrl https://pypi.org/simple
+        run: |
+          $log = @(& .\.venv-desktop\Scripts\python.exe scripts\build_desktop_windows.ps1 -IndexUrl https://pypi.org/simple 2>&1)
+          $log | ForEach-Object { $_ }
+          if ($LASTEXITCODE -ne 0) {
+            $log | Select-Object -Last 80 | ForEach-Object { Write-Output "::error file=build::$_" }
+            exit $LASTEXITCODE
+          }
 
       - name: Create checksum
         shell: pwsh
